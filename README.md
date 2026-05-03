@@ -1,36 +1,78 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Budgeter
 
-## Getting Started
+Next.js + Convex personal finance app with durable statement import workflows, reviewable import rows, cash/accrual ledger views, and credit-card oriented modeling.
 
-First, run the development server:
+## Security warning
+
+**There is no authentication in v1.** Run this only on your own machine or behind a private network. Uploaded statements are sensitive — do not deploy publicly until you add auth and per-user authorization.
+
+## Prerequisites
+
+- [Bun](https://bun.sh) (preferred) or `pnpm` / `npm` as fallback
+- A [Convex](https://convex.dev) project (anonymous agent mode works for codegen)
+
+## Setup
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+bun install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Create `.env.local` with your Convex deployment URL (from `bunx convex dev`):
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```
+NEXT_PUBLIC_CONVEX_URL=https://<your-deployment>.convex.cloud
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Optional for scanned PDFs only:
 
-## Learn More
+```
+FIRECRAWL_API_KEY=fc-...
+```
 
-To learn more about Next.js, take a look at the following resources:
+Digital statement PDFs (for example Discover exports) are parsed locally first. `FIRECRAWL_API_KEY` is only used as an OCR fallback when local PDF extraction returns too little text.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Then:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+bunx convex dev    # keep running while developing — regenerates types
+bun run dev        # Next.js with Turbopack
+```
 
-## Deploy on Vercel
+### Scripts
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+| Script | Purpose |
+| --- | --- |
+| `bun run dev` | Next.js dev server |
+| `bun run convex:dev` | Convex dev / codegen |
+| `bun run lint` | ESLint |
+| `bun run typecheck` | `tsc --noEmit` |
+| `bun run test` | Vitest |
+| `bun run build` | Production build |
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Stack
+
+- **Next.js 16** (App Router) + TypeScript + Tailwind + **shadcn/ui**
+- **Convex** database, file storage, queries/mutations, and **Convex Workflow** for imports
+- **Hybrid PDF parsing**: local `unpdf` first, optional Firecrawl OCR fallback for scanned PDFs
+- Money stored as **integer cents**; dates as **`YYYY-MM-DD`** strings
+
+## Package manager fallback
+
+Prefer Bun (`bun`, `bunx`). If a tool fails under Bun, try `pnpm` / `pnpm dlx`, then npm only as a last resort — document any workaround in a PR.
+
+## Data model overview
+
+See `docs/architecture.md` and `convex/schema.ts`. Canonical `transactions` are separate from parser output (`importRows`), which must be explicitly accepted after review.
+
+The import pipeline now supports:
+
+- CSV statements
+- Discover credit-card PDFs
+- Duplicate-file rejection via SHA256 before a workflow starts
+- Account suggestion + confirmation when a parsed statement is not already linked to an account
+
+## Tests & fixtures
+
+- Unit tests: `bun run test`
+- Safe CSV sample: `tests/fixtures/csv/sample-bank.csv`
+- PDF fixtures: see `tests/fixtures/pdf/README.md`
