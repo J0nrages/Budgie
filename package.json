@@ -1,9 +1,10 @@
 {
-  "name": "budgeter",
+  "name": "budgie",
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --turbopack",
+    "dev": "concurrently -k -n convex,next -c cyan,magenta \"convex dev\" \"next dev --turbopack\"",
+    "dev:web": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
@@ -48,6 +49,7 @@
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^6.0.1",
     "@vitest/coverage-istanbul": "^4.1.5",
+    "concurrently": "^9.2.1",
     "convex-test": "^0.0.51",
     "eslint": "^9",
     "eslint-config-next": "16.2.4",

@@ -2,7 +2,7 @@
 
 import type { Doc, Id } from "convex/_generated/dataModel";
 import { useConvexConnectionState } from "convex/react";
-import { Loader2, Upload } from "lucide-react";
+import { Bird, Loader2, Upload } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { AccountForm } from "@/components/accounts/account-form";
 import { AccountList } from "@/components/accounts/account-list";
@@ -110,8 +110,13 @@ export function FinanceApp() {
     return (
       <div className="mx-auto flex min-h-dvh w-full max-w-6xl flex-col gap-8 px-4 py-8">
         <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <h1 className="text-3xl font-bold leading-tight tracking-tight sm:text-4xl">
-            Budgeter
+          <h1 className="flex items-center gap-2.5 text-3xl font-bold leading-tight tracking-tight sm:text-4xl">
+            <Bird
+              className="size-8 shrink-0 sm:size-9"
+              strokeWidth={1.75}
+              aria-hidden
+            />
+            Budgie
           </h1>
         </header>
         <div
@@ -165,8 +170,13 @@ export function FinanceApp() {
     <div className="mx-auto flex min-h-dvh w-full max-w-6xl flex-col px-4 py-8">
       <div className="flex flex-col gap-8">
         <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-          <h1 className="text-3xl font-bold leading-tight tracking-tight sm:text-4xl">
-            Budgeter
+          <h1 className="flex items-center gap-2.5 text-3xl font-bold leading-tight tracking-tight sm:text-4xl">
+            <Bird
+              className="size-8 shrink-0 sm:size-9"
+              strokeWidth={1.75}
+              aria-hidden
+            />
+            Budgie
           </h1>
           <div className="flex flex-wrap items-center gap-2">
             <SettingsDialog basis={basis} onBasisChange={setBasis} />

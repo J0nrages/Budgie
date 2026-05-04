@@ -2,7 +2,7 @@
 
 ## Near-term
 
-1. Extract `src/lib/{money,dates,ledger,interest,duplicates}.ts` into a workspace package (e.g. `@budgeter/finance-core`).
+1. Extract `src/lib/{money,dates,ledger,interest,duplicates}.ts` into a workspace package (e.g. `@budgie/finance-core`).
 2. Keep Convex as the system of record — an Expo app would use `convex/react-native` with the same deployment.
 
 ## Plaid integration (later)

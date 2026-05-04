@@ -2,7 +2,7 @@
 
 ## Overview
 
-Budgeter is a single-page style dashboard composed from Next.js client components that talk directly to Convex queries and mutations. Convex is the only persistence layer: file bytes live in Convex storage, metadata and ledger data live in Convex tables, and there is no separate ORM.
+Budgie is a single-page style dashboard composed from Next.js client components that talk directly to Convex queries and mutations. Convex is the only persistence layer: file bytes live in Convex storage, metadata and ledger data live in Convex tables, and there is no separate ORM.
 
 Shared accounting and parser-normalization logic lives under `src/lib/*` with **no** imports from React or Convex so it can move into a future mobile package.
 

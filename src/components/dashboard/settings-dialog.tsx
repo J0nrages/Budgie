@@ -143,7 +143,7 @@ export function SettingsDialog({ basis, onBasisChange }: Props) {
 
         <div className="border-t border-border/40 px-5 py-3">
           <p className="text-center text-[10px] text-muted-foreground">
-            Budgeter v1.0.0
+            Budgie v1.0.0
           </p>
         </div>
       </DialogContent>

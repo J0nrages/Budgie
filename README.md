@@ -1,4 +1,4 @@
-# Budgeter
+# Budgie
 
 Next.js + Convex personal finance app with durable statement import workflows, audit-friendly import review, cash/accrual/projected ledger views, indexed report queries, and credit-card oriented modeling.
 
@@ -18,7 +18,7 @@ Next.js + Convex personal finance app with durable statement import workflows, a
 bun install
 ```
 
-Create `.env.local` with your Convex deployment URL (from `bunx convex dev`):
+Create `.env.local` with your Convex deployment URL (from the Convex CLI when you first run `bun run dev`, or from the [Convex dashboard](https://dashboard.convex.dev)):
 
 ```
 NEXT_PUBLIC_CONVEX_URL=https://<your-deployment>.convex.cloud
@@ -35,16 +35,20 @@ Digital statement PDFs (for example Discover exports) are parsed locally first. 
 Then (with Node 24 active, e.g. `nvm use`):
 
 ```bash
-bunx convex dev    # keep running while developing — regenerates types
-bun run dev        # Next.js with Turbopack (same as `next dev --turbopack` via package.json)
+bun run dev
 ```
+
+This runs **Convex dev** (sync, codegen, `_generated` updates) and **Next.js with Turbopack** in one terminal via [`concurrently`](https://www.npmjs.com/package/concurrently). **Ctrl+C** stops both. If one process exits, the other is stopped as well (`-k`).
+
+To run only the web app (for example when Convex is already running in another terminal), use `bun run dev:web`.
 
 ### Scripts
 
 | Script | Purpose |
 | --- | --- |
-| `bun run dev` | Next.js dev server |
-| `bun run convex:dev` | Convex dev / codegen |
+| `bun run dev` | Convex dev + Next.js dev server together (default local stack) |
+| `bun run dev:web` | Next.js only (`next dev --turbopack`) |
+| `bun run convex:dev` | Convex dev / codegen only |
 | `bun run lint` | ESLint |
 | `bun run typecheck` | `tsc --noEmit` |
 | `bun run test` | Vitest |

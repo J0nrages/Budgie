@@ -19,8 +19,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Budgeter",
-  description: "Personal finance dashboard (Next.js + Convex)",
+  title: "Budgie",
+  description: "Personal budgeting dashboard (Next.js + Convex)",
 };
 
 export default function RootLayout({
