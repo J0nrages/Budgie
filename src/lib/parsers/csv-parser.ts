@@ -20,6 +20,7 @@ function normalizeHeader(h: string): string {
 
 /**
  * Flexible CSV: expects headers containing date + amount OR debit/credit + description/mem/payee.
+ * Optionally reads separate transaction vs post dates, balance, FITID, memo, merchant.
  */
 export function parseBankCsv(input: ParserInput): ParserResult {
   const text = input.text;
@@ -44,20 +45,29 @@ export function parseBankCsv(input: ParserInput): ParserResult {
   const idx = (name: string): number =>
     headers.findIndex((h) => h.includes(name));
 
-  const dateIdx = ["date", "posted", "transactiondate"].map(idx).find((i) => i >= 0);
+  const postDateIdx = ["postingdate", "postdate", "settlementdate"].map(idx).find((i) => i >= 0);
+  const txnDateIdx = ["transactiondate", "transdate", "activitydate"].map(idx).find((i) => i >= 0);
+  const legacyDateIdx = ["date", "details"].map(idx).find((i) => i >= 0);
+
+  const primaryDateIdx = postDateIdx ?? txnDateIdx ?? legacyDateIdx;
+
   const amountIdx = idx("amount");
   const debitIdx = idx("debit");
   const creditIdx = idx("credit");
-  const descIdx = ["description", "memo", "payee", "details", "name"]
-    .map(idx)
-    .find((i) => i >= 0);
+  const balanceIdx = ["balance", "runningbalance"].map(idx).find((i) => i >= 0);
+  const memoIdx = idx("memo");
+  const merchantIdx = ["merchant", "payee"].map(idx).find((i) => i >= 0);
+  const descIdx = ["description", "details", "name"].map(idx).find((i) => i >= 0);
+  const fitIdx = ["fitid", "transactionid", "reference"].map(idx).find((i) => i >= 0);
+  const checkIdx = idx("checknumber");
+  const typeIdx = idx("type");
 
-  if (dateIdx === undefined || descIdx === undefined) {
+  if (primaryDateIdx === undefined || (descIdx === undefined && merchantIdx === undefined)) {
     return {
       ok: false,
       errorCode: "MISSING_COLUMNS",
       message:
-        "CSV is missing required columns (need date and description fields).",
+        "CSV is missing required columns (need a date column and description or merchant).",
     };
   }
 
@@ -73,8 +83,21 @@ export function parseBankCsv(input: ParserInput): ParserResult {
   const rows: ParserRow[] = [];
   for (let i = 1; i < lines.length; i++) {
     const cells = lines[i].split(",");
-    const dateRaw = cells[dateIdx]?.trim() ?? "";
-    const descRaw = cells[descIdx]?.trim() ?? "";
+    const postedRaw =
+      postDateIdx !== undefined ? (cells[postDateIdx]?.trim() ?? "") : "";
+    const txnRaw =
+      txnDateIdx !== undefined && txnDateIdx !== postDateIdx
+        ? (cells[txnDateIdx]?.trim() ?? "")
+        : "";
+    const legacyRaw = cells[primaryDateIdx]?.trim() ?? "";
+    const dateRaw =
+      postedRaw.length > 0 ? postedRaw : txnRaw.length > 0 ? txnRaw : legacyRaw;
+
+    const descRaw =
+      descIdx !== undefined ? (cells[descIdx]?.trim() ?? "") : "";
+    const merchantRaw =
+      merchantIdx !== undefined ? (cells[merchantIdx]?.trim() ?? "") : "";
+    const memoRaw = memoIdx !== undefined ? (cells[memoIdx]?.trim() ?? "") : "";
 
     let amountCents: number | undefined;
     if (amountIdx >= 0) {
@@ -91,7 +114,7 @@ export function parseBankCsv(input: ParserInput): ParserResult {
         rows.push({
           rowIndex: i - 1,
           rawSummary: `Row ${i}: conflicting debit and credit`,
-          description: descRaw,
+          description: descRaw || merchantRaw,
           postedDate: dateRaw,
         });
         continue;
@@ -100,12 +123,39 @@ export function parseBankCsv(input: ParserInput): ParserResult {
       else if (c) amountCents = c;
     }
 
+    let balanceCents: number | undefined;
+    if (balanceIdx !== undefined) {
+      const b = parseMoneyCell(cells[balanceIdx] ?? "");
+      if (b !== null) balanceCents = b;
+    }
+
+    const bankRaw = fitIdx !== undefined ? (cells[fitIdx]?.trim() ?? "") : "";
+    const checkRaw = checkIdx >= 0 ? (cells[checkIdx]?.trim() ?? "") : "";
+    const typeRaw = typeIdx >= 0 ? (cells[typeIdx]?.trim().toLowerCase() ?? "") : "";
+
+    let postingStatus: ParserRow["postingStatus"];
+    if (typeRaw.includes("pending")) postingStatus = "pending";
+    else if (typeRaw.includes("posted") || typeRaw.includes("complete")) {
+      postingStatus = "posted";
+    }
+
+    const description = descRaw.length > 0 ? descRaw : merchantRaw;
+    const merchantName = merchantRaw.length > 0 && merchantRaw !== descRaw ? merchantRaw : undefined;
+
     rows.push({
       rowIndex: i - 1,
-      rawSummary: `Row ${i}: ${dateRaw} · ${descRaw.slice(0, 80)}`,
-      postedDate: dateRaw,
-      description: descRaw,
+      rawSummary: `Row ${i}: ${dateRaw} · ${description.slice(0, 80)}`,
+      postedDate: postedRaw.length > 0 ? postedRaw : dateRaw,
+      transactionDate:
+        txnRaw.length > 0 && txnRaw !== postedRaw ? txnRaw : undefined,
+      description,
+      merchantName,
+      memo: memoRaw.length > 0 ? memoRaw : undefined,
       amountCents,
+      balanceCents,
+      bankTransactionId: bankRaw.length > 0 ? bankRaw : undefined,
+      checkNumber: checkRaw.length > 0 ? checkRaw : undefined,
+      postingStatus,
     });
   }
 

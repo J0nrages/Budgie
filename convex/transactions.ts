@@ -4,7 +4,7 @@ import { mutation, query } from "./_generated/server";
 import { assertSingleUserLocalMode } from "./lib/auth";
 import { assertIsoDate } from "./lib/datesIso";
 import { buildTransactionDuplicateKey } from "./lib/ids";
-import { transactionTypeValidator } from "./validators";
+import { postingStatusValidator, transactionTypeValidator } from "./validators";
 
 function normalizeOptionalString(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
@@ -107,6 +107,19 @@ export const create = mutation({
     incurredDate: v.string(),
     isCleared: v.boolean(),
     clearedDate: v.optional(v.string()),
+    transactionDate: v.optional(v.string()),
+    postedDate: v.optional(v.string()),
+    merchantName: v.optional(v.string()),
+    merchantId: v.optional(v.id("merchants")),
+    originalDescription: v.optional(v.string()),
+    memo: v.optional(v.string()),
+    bankTransactionId: v.optional(v.string()),
+    referenceNumber: v.optional(v.string()),
+    checkNumber: v.optional(v.string()),
+    currencyCode: v.optional(v.string()),
+    importedBalanceCents: v.optional(v.number()),
+    postingStatus: v.optional(postingStatusValidator),
+    pendingMatchesKey: v.optional(v.string()),
   },
   returns: v.id("transactions"),
   handler: async (ctx, args): Promise<Id<"transactions">> => {
@@ -120,6 +133,13 @@ export const create = mutation({
       assertIsoDate("Cleared date", args.clearedDate);
     } else if (args.clearedDate) {
       throw new Error("Cannot set cleared date on a pending transaction");
+    }
+
+    if (args.transactionDate !== undefined && args.transactionDate.trim().length > 0) {
+      assertIsoDate("Transaction date", args.transactionDate);
+    }
+    if (args.postedDate !== undefined && args.postedDate.trim().length > 0) {
+      assertIsoDate("Posted date", args.postedDate);
     }
 
     const description = args.description.trim();
@@ -148,6 +168,16 @@ export const create = mutation({
     }
 
     const category = normalizeOptionalString(args.category);
+    const transactionDate = normalizeOptionalString(args.transactionDate);
+    const postedDate = normalizeOptionalString(args.postedDate);
+    const merchantName = normalizeOptionalString(args.merchantName);
+    const originalDescription = normalizeOptionalString(args.originalDescription);
+    const memo = normalizeOptionalString(args.memo);
+    const bankTransactionId = normalizeOptionalString(args.bankTransactionId);
+    const referenceNumber = normalizeOptionalString(args.referenceNumber);
+    const checkNumber = normalizeOptionalString(args.checkNumber);
+    const currencyCode = normalizeOptionalString(args.currencyCode);
+    const pendingMatchesKey = normalizeOptionalString(args.pendingMatchesKey);
 
     const duplicateKey = buildTransactionDuplicateKey({
       incurredDate: args.incurredDate,
@@ -177,6 +207,19 @@ export const create = mutation({
       description,
       category,
       incurredDate: args.incurredDate,
+      transactionDate,
+      postedDate,
+      merchantName,
+      merchantId: args.merchantId,
+      originalDescription: originalDescription ?? description,
+      memo,
+      bankTransactionId,
+      referenceNumber,
+      checkNumber,
+      currencyCode,
+      importedBalanceCents: args.importedBalanceCents,
+      postingStatus: args.postingStatus,
+      pendingMatchesKey,
       isCleared: args.isCleared,
       clearedDate: args.clearedDate,
       duplicateKey,
@@ -199,6 +242,19 @@ export const update = mutation({
     incurredDate: v.optional(v.string()),
     isCleared: v.optional(v.boolean()),
     clearedDate: v.optional(v.string()),
+    transactionDate: v.optional(v.string()),
+    postedDate: v.optional(v.string()),
+    merchantName: v.optional(v.string()),
+    merchantId: v.optional(v.id("merchants")),
+    originalDescription: v.optional(v.string()),
+    memo: v.optional(v.string()),
+    bankTransactionId: v.optional(v.string()),
+    referenceNumber: v.optional(v.string()),
+    checkNumber: v.optional(v.string()),
+    currencyCode: v.optional(v.string()),
+    importedBalanceCents: v.optional(v.number()),
+    postingStatus: v.optional(postingStatusValidator),
+    pendingMatchesKey: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
@@ -253,6 +309,13 @@ export const update = mutation({
         ? normalizeOptionalString(args.category)
         : existing.category;
 
+    if (args.transactionDate !== undefined && args.transactionDate.trim().length > 0) {
+      assertIsoDate("Transaction date", args.transactionDate);
+    }
+    if (args.postedDate !== undefined && args.postedDate.trim().length > 0) {
+      assertIsoDate("Posted date", args.postedDate);
+    }
+
     const duplicateKey = buildTransactionDuplicateKey({
       incurredDate: nextIncurred,
       amountCents: nextAmount,
@@ -269,7 +332,7 @@ export const update = mutation({
       throw new Error("Update would duplicate another transaction");
     }
 
-    await ctx.db.patch(args.transactionId, {
+    const patch: Partial<Doc<"transactions">> = {
       type: nextType,
       amountCents: nextAmount,
       accountId: nextAccountId,
@@ -282,7 +345,49 @@ export const update = mutation({
       clearedDate: nextCleared ? nextClearedDate : undefined,
       duplicateKey,
       updatedAt: Date.now(),
-    });
+    };
+
+    if (args.transactionDate !== undefined) {
+      patch.transactionDate = normalizeOptionalString(args.transactionDate);
+    }
+    if (args.postedDate !== undefined) {
+      patch.postedDate = normalizeOptionalString(args.postedDate);
+    }
+    if (args.merchantName !== undefined) {
+      patch.merchantName = normalizeOptionalString(args.merchantName);
+    }
+    if (args.merchantId !== undefined) {
+      patch.merchantId = args.merchantId;
+    }
+    if (args.originalDescription !== undefined) {
+      patch.originalDescription = normalizeOptionalString(args.originalDescription);
+    }
+    if (args.memo !== undefined) {
+      patch.memo = normalizeOptionalString(args.memo);
+    }
+    if (args.bankTransactionId !== undefined) {
+      patch.bankTransactionId = normalizeOptionalString(args.bankTransactionId);
+    }
+    if (args.referenceNumber !== undefined) {
+      patch.referenceNumber = normalizeOptionalString(args.referenceNumber);
+    }
+    if (args.checkNumber !== undefined) {
+      patch.checkNumber = normalizeOptionalString(args.checkNumber);
+    }
+    if (args.currencyCode !== undefined) {
+      patch.currencyCode = normalizeOptionalString(args.currencyCode);
+    }
+    if (args.importedBalanceCents !== undefined) {
+      patch.importedBalanceCents = args.importedBalanceCents;
+    }
+    if (args.postingStatus !== undefined) {
+      patch.postingStatus = args.postingStatus;
+    }
+    if (args.pendingMatchesKey !== undefined) {
+      patch.pendingMatchesKey = normalizeOptionalString(args.pendingMatchesKey);
+    }
+
+    await ctx.db.patch(args.transactionId, patch);
 
     return null;
   },
@@ -298,8 +403,8 @@ export const remove = mutation({
 
     const row = await ctx.db
       .query("importRows")
-      .filter((q) =>
-        q.eq(q.field("acceptedTransactionId"), args.transactionId),
+      .withIndex("by_accepted_transaction", (q) =>
+        q.eq("acceptedTransactionId", args.transactionId),
       )
       .first();
     if (row) {

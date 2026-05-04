@@ -1,10 +1,8 @@
 "use client";
 
 import type { Id } from "convex/_generated/dataModel";
-import { useRef, useState } from "react";
-import { toast } from "sonner";
+import { useCallback, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -13,8 +11,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useImportFileUpload } from "@/hooks/use-import-file-upload";
 import type { useImports } from "@/hooks/use-imports";
-import { sha256Hex } from "@/lib/hash";
 
 type Props = {
   importsApi: ReturnType<typeof useImports>;
@@ -27,53 +25,14 @@ type Props = {
 };
 
 export function StatementUpload({ importsApi, accounts }: Props) {
-  const { uploadUrl, finalizeUpload } = importsApi;
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [busy, setBusy] = useState(false);
   const [accountKey, setAccountKey] = useState<string>("__none__");
-
-  async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setBusy(true);
-    try {
-      const sha256 = await sha256Hex(file);
-      const { uploadUrl: url } = await uploadUrl({});
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": file.type },
-        body: file,
-      });
-      if (!res.ok) throw new Error(`Upload failed (${res.status})`);
-      const json = (await res.json()) as { storageId: Id<"_storage"> };
-      const result = await finalizeUpload({
-        storageId: json.storageId,
-        fileName: file.name,
-        contentType: file.type || "application/octet-stream",
-        sizeBytes: file.size,
-        sha256,
-        accountId:
-          accountKey !== "__none__"
-            ? (accountKey as Id<"accounts">)
-            : undefined,
-      });
-      if (result.kind === "duplicate") {
-        toast.error(
-          `Duplicate statement skipped. Matching file: ${result.existingFileName}`,
-        );
-      } else {
-        toast.success("Statement uploaded — import workflow started.");
-      }
-      e.target.value = "";
-    } catch (err) {
-      console.error(err);
-      toast.error(
-        err instanceof Error ? err.message : "Upload could not complete.",
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
+  const getAccountId = useCallback((): Id<"accounts"> | undefined => {
+    return accountKey !== "__none__" ? (accountKey as Id<"accounts">) : undefined;
+  }, [accountKey]);
+  const { inputRef, busy, onFile, openFileDialog } = useImportFileUpload(
+    importsApi,
+    getAccountId,
+  );
 
   return (
     <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
@@ -95,10 +54,11 @@ export function StatementUpload({ importsApi, accounts }: Props) {
       </div>
       <div className="space-y-2">
         <Label htmlFor="stmt-file">Statement file</Label>
-        <Input
+        <input
           id="stmt-file"
           ref={inputRef}
           type="file"
+          multiple
           accept=".csv,.pdf,text/csv,application/pdf"
           disabled={busy}
           onChange={onFile}
@@ -109,7 +69,7 @@ export function StatementUpload({ importsApi, accounts }: Props) {
         type="button"
         variant="secondary"
         disabled={busy}
-        onClick={() => inputRef.current?.click()}
+        onClick={openFileDialog}
       >
         {busy ? "Uploading…" : "Browse…"}
       </Button>

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AccountLike, TransactionLike } from "@/lib/ledger";
 import {
   buildAccountLedger,
+  buildAccountLedgerProjected,
   netWorthCents,
   sumIncomeExpense,
 } from "@/lib/ledger";
@@ -67,6 +68,13 @@ describe("ledger", () => {
   it("accrual basis includes pending transactions", () => {
     const ledger = buildAccountLedger(card, txs, "accrual");
     expect(ledger.some((l) => l.description.includes("Pending"))).toBe(true);
+  });
+
+  it("projected cash basis includes pending using incurred date", () => {
+    const projected = buildAccountLedgerProjected(card, txs, "cash");
+    expect(projected.some((l) => l.description.includes("Pending"))).toBe(true);
+    const pendingLine = projected.find((l) => l.description.includes("Pending"));
+    expect(pendingLine?.sortDate).toBe("2025-04-09");
   });
 
   it("counts transfers without inflating expenses", () => {

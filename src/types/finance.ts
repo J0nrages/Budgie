@@ -47,3 +47,13 @@ export type InterestMethod =
   | "averageDailyBalance"
   | "dailyBalance"
   | "statementBalanceEstimate";
+
+/** Bank-reported posting lifecycle. */
+export type PostingStatus = "pending" | "posted";
+
+/** Statement reconciliation vs source balances. */
+export type ReconciliationStatus =
+  | "unknown"
+  | "provisional"
+  | "matched"
+  | "mismatch";

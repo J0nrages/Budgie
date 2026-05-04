@@ -19,6 +19,7 @@ import type { useImports } from "@/hooks/use-imports";
 import { AccountLinkPrompt } from "./account-link-prompt";
 import { ImportJobStatus } from "./import-job-status";
 import { ImportReviewTable } from "./import-review-table";
+import { MerchantPhaseATools } from "./merchant-phase-a";
 import { StatementUpload } from "./statement-upload";
 
 type Props = {
@@ -52,6 +53,7 @@ export function UploadPanel({
       </CardHeader>
       <CardContent className="space-y-6">
         <StatementUpload importsApi={importsApi} accounts={accounts} />
+        <MerchantPhaseATools importsApi={importsApi} />
         <div className="space-y-2">
           <p className="text-sm font-medium">Recent jobs</p>
           <Select
@@ -85,7 +87,8 @@ export function UploadPanel({
           />
         ) : null}
         <ImportReviewTable
-          jobId={effectiveJobId}
+          jobId={resolvedJobId}
+          job={selectedJob}
           rows={importsApi.rows}
           importsApi={importsApi}
         />

@@ -13,11 +13,21 @@ export function BasisToggle({ basis, onBasisChange }: Props) {
     <Tabs
       value={basis}
       onValueChange={(v) => onBasisChange(v as Basis)}
-      className="w-full max-w-xs"
+      className="w-full"
     >
-      <TabsList className="grid w-full grid-cols-2">
-        <TabsTrigger value="cash">Cash basis</TabsTrigger>
-        <TabsTrigger value="accrual">Accrual basis</TabsTrigger>
+      <TabsList className="grid h-9 w-full grid-cols-2 bg-transparent p-0">
+        <TabsTrigger
+          value="cash"
+          className="rounded-xl data-active:bg-white dark:data-active:bg-zinc-800 data-active:shadow-sm"
+        >
+          Cash basis
+        </TabsTrigger>
+        <TabsTrigger
+          value="accrual"
+          className="rounded-xl data-active:bg-white dark:data-active:bg-zinc-800 data-active:shadow-sm"
+        >
+          Accrual basis
+        </TabsTrigger>
       </TabsList>
     </Tabs>
   );

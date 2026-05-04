@@ -6,6 +6,8 @@ export type FlowPeriod = "daily" | "weekly" | "monthly";
 
 export type TrendPoint = {
   label: string;
+  /** YYYY-MM-DD bucket / point date for sorting, brush zoom, and drill-down */
+  date: string;
   valueCents: number;
 };
 
@@ -122,7 +124,14 @@ export function buildNetWorthTrend(
   ).sort();
 
   if (dates.length === 0) {
-    return [{ label: "Today", valueCents: netWorthCents(accounts, [], basis) }];
+    const today = toIsoDate(new Date());
+    return [
+      {
+        label: "Today",
+        date: today,
+        valueCents: netWorthCents(accounts, [], basis),
+      },
+    ];
   }
 
   const latestDate = dates.at(-1)!;
@@ -142,6 +151,7 @@ export function buildNetWorthTrend(
 
   return trendDates.map((date) => ({
     label: date.slice(5),
+    date,
     valueCents: netWorthCents(
       accounts,
       transactions.filter((transaction) => {
@@ -184,6 +194,7 @@ export function buildFlowTrend(
 
   return buildPeriodKeys(latestDate, earliestDate, period).map((key) => ({
     label: periodLabel(key, period),
+    date: key,
     valueCents: buckets.get(key) ?? 0,
   }));
 }

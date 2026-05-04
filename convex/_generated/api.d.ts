@@ -9,17 +9,27 @@
  */
 
 import type * as accounts from "../accounts.js";
+import type * as budgetReports from "../budgetReports.js";
+import type * as budgetScenarios from "../budgetScenarios.js";
+import type * as budgets from "../budgets.js";
+import type * as categories from "../categories.js";
 import type * as importActions from "../importActions.js";
 import type * as importWorkflow from "../importWorkflow.js";
 import type * as importWorkflowSteps from "../importWorkflowSteps.js";
 import type * as imports from "../imports.js";
 import type * as lib_auth from "../lib/auth.js";
+import type * as lib_budgetMath from "../lib/budgetMath.js";
+import type * as lib_categories from "../lib/categories.js";
 import type * as lib_datesIso from "../lib/datesIso.js";
 import type * as lib_firecrawl from "../lib/firecrawl.js";
 import type * as lib_hash from "../lib/hash.js";
 import type * as lib_ids from "../lib/ids.js";
+import type * as lib_merchantKey from "../lib/merchantKey.js";
 import type * as lib_redaction from "../lib/redaction.js";
+import type * as lib_statementReconciliation from "../lib/statementReconciliation.js";
 import type * as lib_workflow from "../lib/workflow.js";
+import type * as merchants from "../merchants.js";
+import type * as reports from "../reports.js";
 import type * as seed from "../seed.js";
 import type * as statements from "../statements.js";
 import type * as transactions from "../transactions.js";
@@ -33,17 +43,27 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   accounts: typeof accounts;
+  budgetReports: typeof budgetReports;
+  budgetScenarios: typeof budgetScenarios;
+  budgets: typeof budgets;
+  categories: typeof categories;
   importActions: typeof importActions;
   importWorkflow: typeof importWorkflow;
   importWorkflowSteps: typeof importWorkflowSteps;
   imports: typeof imports;
   "lib/auth": typeof lib_auth;
+  "lib/budgetMath": typeof lib_budgetMath;
+  "lib/categories": typeof lib_categories;
   "lib/datesIso": typeof lib_datesIso;
   "lib/firecrawl": typeof lib_firecrawl;
   "lib/hash": typeof lib_hash;
   "lib/ids": typeof lib_ids;
+  "lib/merchantKey": typeof lib_merchantKey;
   "lib/redaction": typeof lib_redaction;
+  "lib/statementReconciliation": typeof lib_statementReconciliation;
   "lib/workflow": typeof lib_workflow;
+  merchants: typeof merchants;
+  reports: typeof reports;
   seed: typeof seed;
   statements: typeof statements;
   transactions: typeof transactions;

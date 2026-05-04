@@ -1,5 +1,14 @@
 import type { Id } from "../_generated/dataModel";
 
+/**
+ * Duplicate detection uses two paths:
+ * - Composite `duplicateKey` (date + amount + description + account): fuzzy human-style dedupe.
+ * - Optional `bankTransactionId` (FITID / institution id): strong identity when present; never
+ *   silently merge — accept checks both; `forceAcceptDuplicate` bypasses both for intentional
+ *   overrides. If composite says unique but bank id collides (or vice versa), surface as duplicate
+ *   unless forced.
+ */
+
 export type DuplicateKeyParts = {
   incurredDate: string;
   amountCents: number;

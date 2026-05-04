@@ -41,6 +41,7 @@ type Props = {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   editing: Doc<"transactions"> | null;
+  initialType?: TransactionType;
   accounts: Doc<"accounts">[] | undefined;
   txApi: ReturnType<typeof useTransactions>;
 };
@@ -49,6 +50,7 @@ export function TransactionForm({
   open,
   onOpenChange,
   editing,
+  initialType,
   accounts,
   txApi,
 }: Props) {
@@ -69,7 +71,7 @@ export function TransactionForm({
     if (!open) return;
     /* eslint-disable react-hooks/set-state-in-effect -- dialog opens with new editing target */
     if (editing) {
-      setType(editing.type);
+      setType(initialType ?? editing.type);
       setAmount((editing.amountCents / 100).toFixed(2));
       setPrimaryAccount(editing.accountId ?? "");
       setFromAccount(editing.fromAccountId ?? "");
@@ -80,7 +82,7 @@ export function TransactionForm({
       setCleared(editing.isCleared);
       setClearedDate(editing.clearedDate ?? "");
     } else {
-      setType("expense");
+      setType(initialType ?? "expense");
       setAmount("0");
       setPrimaryAccount("");
       setFromAccount("");
@@ -92,7 +94,7 @@ export function TransactionForm({
       setClearedDate("");
     }
     /* eslint-enable react-hooks/set-state-in-effect */
-  }, [open, editing]);
+  }, [open, editing, initialType]);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -202,7 +204,6 @@ export function TransactionForm({
             <Select
               value={type}
               onValueChange={(v) => setType(v as TransactionType)}
-              disabled={!!editing}
             >
               <SelectTrigger>
                 <SelectValue />

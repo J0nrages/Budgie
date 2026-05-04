@@ -4,6 +4,7 @@ import type { ParserInput, ParserResult, ParserRow } from "./parser-types";
 type DiscoverSection = "payments" | "purchases" | "fees" | "interest" | null;
 
 type ParsedRow = {
+  transactionDate?: string;
   postedDate: string;
   description: string;
   amountCents: number;
@@ -153,11 +154,14 @@ function parseTableRow(
   }
 
   const postDate = toIsoDate(cells[1], statementPeriodStart, statementPeriodEnd);
+  const transDateIso = toIsoDate(cells[0], statementPeriodStart, statementPeriodEnd);
   const amountCents = parseAmountCents(cells[cells.length - 1]);
   const description = cells.slice(2, -1).join(" ").trim();
   if (!postDate || amountCents === null || !description) return null;
 
   return {
+    transactionDate:
+      transDateIso && transDateIso !== postDate ? transDateIso : undefined,
     postedDate: postDate,
     description,
     amountCents: signAmount(amountCents, section, description),
@@ -181,6 +185,7 @@ function parseStatementLine(
   if (!match) return null;
 
   const postDateRaw = match.length >= 5 ? match[2] : match[1];
+  const transDateRaw = match.length >= 5 ? match[1] : undefined;
   const description = cleanLine(match.length >= 5 ? match[3] : match[2]);
   const amountRaw = match[match.length - 1];
   const postedDate = toIsoDate(
@@ -188,10 +193,17 @@ function parseStatementLine(
     statementPeriodStart,
     statementPeriodEnd,
   );
+  const transactionDate = transDateRaw
+    ? toIsoDate(transDateRaw, statementPeriodStart, statementPeriodEnd)
+    : undefined;
   const amountCents = parseAmountCents(amountRaw);
   if (!postedDate || amountCents === null || !description) return null;
 
   return {
+    transactionDate:
+      transactionDate && transactionDate !== postedDate
+        ? transactionDate
+        : undefined,
     postedDate,
     description,
     amountCents: signAmount(amountCents, section, description),
@@ -243,9 +255,11 @@ export function parseDiscoverStatement(input: ParserInput): ParserResult {
         rowIndex: rows.length,
         rawSummary: `${parsed.postedDate} · ${parsed.description.slice(0, 80)}`,
         postedDate: parsed.postedDate,
+        transactionDate: parsed.transactionDate,
         description: parsed.description,
         amountCents: parsed.amountCents,
         category: parsed.category,
+        postingStatus: "posted",
       });
       continue;
     }

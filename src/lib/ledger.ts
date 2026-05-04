@@ -20,6 +20,8 @@ export type TransactionLike = {
   isCleared: boolean;
   clearedDate?: string;
   createdAt: number;
+  /** When set, included in projected cash ledger while still pending. */
+  postingStatus?: "pending" | "posted";
 };
 
 export type LedgerLine = {
@@ -49,13 +51,31 @@ export function transactionBasisDate(
   return tx.incurredDate;
 }
 
+/**
+ * Cash-flow projection: pending uncleared items sort by incurred date;
+ * cleared items use cleared date. Accrual matches posted ledger (incurred only).
+ */
+export function transactionProjectedBasisDate(
+  tx: TransactionLike,
+  basis: Basis,
+): string | null {
+  if (basis === "accrual") {
+    return tx.incurredDate;
+  }
+  if (tx.isCleared && tx.clearedDate) {
+    return tx.clearedDate;
+  }
+  return tx.incurredDate;
+}
+
 function compareTxForBasis(
   a: TransactionLike,
   b: TransactionLike,
   basis: Basis,
+  pickDate: (tx: TransactionLike, basis: Basis) => string | null,
 ): number {
-  const da = transactionBasisDate(a, basis);
-  const db = transactionBasisDate(b, basis);
+  const da = pickDate(a, basis);
+  const db = pickDate(b, basis);
   if (!da || !db) return 0;
   const c = compareIsoDates(da, db);
   if (c !== 0) return c;
@@ -114,12 +134,54 @@ export function buildAccountLedger(
 ): LedgerLine[] {
   const relevant = transactions
     .filter((tx) => transactionBasisDate(tx, basis) !== null)
-    .sort((a, b) => compareTxForBasis(a, b, basis));
+    .sort((a, b) => compareTxForBasis(a, b, basis, transactionBasisDate));
 
   const linesAsc: LedgerLine[] = [];
 
   for (const tx of relevant) {
     const sortDate = transactionBasisDate(tx, basis);
+    if (!sortDate) continue;
+    const hit = signedDeltaForAccount(tx, account._id);
+    if (!hit) continue;
+    linesAsc.push({
+      transactionId: tx._id,
+      accountId: account._id,
+      sortDate,
+      incurredDate: tx.incurredDate,
+      clearedDate: tx.clearedDate,
+      description: tx.description,
+      type: tx.type,
+      deltaCents: hit.delta,
+      leg: hit.leg,
+      runningBalanceCents: 0,
+    });
+  }
+
+  linesAsc.sort(compareLines);
+
+  let running = account.initialBalanceCents;
+  for (const line of linesAsc) {
+    running += line.deltaCents;
+    line.runningBalanceCents = running;
+  }
+
+  return linesAsc.slice().reverse();
+}
+
+/** Ledger including uncleared rows on cash basis (uses incurred until cleared). */
+export function buildAccountLedgerProjected(
+  account: AccountLike,
+  transactions: TransactionLike[],
+  basis: Basis,
+): LedgerLine[] {
+  const relevant = transactions
+    .filter((tx) => transactionProjectedBasisDate(tx, basis) !== null)
+    .sort((a, b) => compareTxForBasis(a, b, basis, transactionProjectedBasisDate));
+
+  const linesAsc: LedgerLine[] = [];
+
+  for (const tx of relevant) {
+    const sortDate = transactionProjectedBasisDate(tx, basis);
     if (!sortDate) continue;
     const hit = signedDeltaForAccount(tx, account._id);
     if (!hit) continue;

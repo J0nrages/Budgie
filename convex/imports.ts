@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { mutation, query } from "./_generated/server";
@@ -6,12 +7,17 @@ import { assertSingleUserLocalMode } from "./lib/auth";
 import { assertIsoDate } from "./lib/datesIso";
 import { recountImportJob } from "./importWorkflowSteps";
 import { buildTransactionDuplicateKey } from "./lib/ids";
+import { normalizedMerchantKey } from "./lib/merchantKey";
+import { syncStatementReconciliation } from "./lib/statementReconciliation";
+import { workflowManager } from "./lib/workflow";
 import {
   accountSuggestionValidator,
   accountSubtypeValidator,
   accountTypeValidator,
+  postingStatusValidator,
   transactionTypeValidator,
 } from "./validators";
+import type { WorkflowId } from "@convex-dev/workflow";
 
 function normalizeOptionalString(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
@@ -21,6 +27,40 @@ function normalizeOptionalString(value: string | undefined): string | undefined 
 
 function hasAccountPatchContent(patch: Partial<Doc<"accounts">>): boolean {
   return Object.keys(patch).some((key) => key !== "updatedAt");
+}
+
+async function findBankDuplicateTransaction(
+  ctx: MutationCtx,
+  bankTransactionId: string | undefined,
+  accountId: Id<"accounts">,
+): Promise<Doc<"transactions"> | null> {
+  const id = bankTransactionId?.trim();
+  if (!id) return null;
+  const hits = await ctx.db
+    .query("transactions")
+    .withIndex("by_bank_transaction_id", (q) => q.eq("bankTransactionId", id))
+    .take(20);
+  return hits.find((t) => t.accountId === accountId) ?? null;
+}
+
+async function resolveMerchantIdFromRow(
+  ctx: MutationCtx,
+  row: Doc<"importRows">,
+): Promise<Id<"merchants"> | undefined> {
+  const raw = row.normalizedMerchantName?.trim() ?? row.merchantName?.trim();
+  if (!raw) return undefined;
+  const key = normalizedMerchantKey(raw);
+  if (key.length === 0) return undefined;
+  const direct = await ctx.db
+    .query("merchants")
+    .withIndex("by_normalized_key", (q) => q.eq("normalizedKey", key))
+    .first();
+  if (direct) return direct._id;
+  const alias = await ctx.db
+    .query("merchantAliases")
+    .withIndex("by_alias_pattern", (q) => q.eq("aliasPattern", key))
+    .first();
+  return alias?.merchantId;
 }
 
 function buildAccountSuggestionPatch(
@@ -118,6 +158,7 @@ async function recomputeJobRowStateForAccount(
     .collect();
 
   const seenKeys = new Set<string>();
+  const seenBankIds = new Set<string>();
   const now = Date.now();
 
   for (const row of rows) {
@@ -137,10 +178,17 @@ async function recomputeJobRowStateForAccount(
       accountKey: accountId,
     });
 
+    const bankId = row.bankTransactionId?.trim();
+
     let status = row.status;
     if (row.status !== "accepted" && row.status !== "rejected") {
       let markDuplicate = seenKeys.has(duplicateKey);
       if (!markDuplicate) seenKeys.add(duplicateKey);
+
+      if (!markDuplicate && bankId) {
+        if (seenBankIds.has(bankId)) markDuplicate = true;
+        else seenBankIds.add(bankId);
+      }
 
       if (!markDuplicate) {
         const existingTx = await ctx.db
@@ -148,6 +196,11 @@ async function recomputeJobRowStateForAccount(
           .withIndex("by_duplicateKey", (q) => q.eq("duplicateKey", duplicateKey))
           .first();
         if (existingTx) markDuplicate = true;
+      }
+
+      if (!markDuplicate && bankId) {
+        const bankHit = await findBankDuplicateTransaction(ctx, bankId, accountId);
+        if (bankHit) markDuplicate = true;
       }
 
       status = markDuplicate ? "duplicate" : "needsReview";
@@ -183,11 +236,24 @@ async function refreshRowDuplicateState(
     return;
   }
 
+  const accountId = row.accountId ?? job.accountId;
+
   const existingTx = await ctx.db
     .query("transactions")
     .withIndex("by_duplicateKey", (q) => q.eq("duplicateKey", duplicateKey))
     .first();
-  status = existingTx ? "duplicate" : "needsReview";
+  let markDuplicate = Boolean(existingTx);
+
+  if (!markDuplicate && accountId) {
+    const bankHit = await findBankDuplicateTransaction(
+      ctx,
+      row.bankTransactionId,
+      accountId,
+    );
+    markDuplicate = Boolean(bankHit);
+  }
+
+  status = markDuplicate ? "duplicate" : "needsReview";
 
   await ctx.db.patch(row._id, {
     duplicateKey,
@@ -227,15 +293,121 @@ export const getAccountSuggestionForJob = query({
   },
 });
 
+/**
+ * Re-run parsing for an import job. Useful when the workflow died (for example
+ * before this fix, when an unhandled parser exception left the job stuck in
+ * `processing`) or when a transient `failed` status should be retried after
+ * fixing config such as `FIRECRAWL_API_KEY`.
+ *
+ * The mutation:
+ * - Cancels and cleans up the old workflow attempt if one is recorded.
+ * - Removes any importRows that have not been accepted yet (rejected /
+ *   duplicate / error / needsReview rows came from the previous attempt and
+ *   should be replaced by the new parse). Accepted rows are preserved so we
+ *   never silently destroy ledger transactions the user already promoted.
+ * - Resets job + statementFile status back to `queued` and clears any
+ *   redacted error.
+ * - Starts a fresh workflow.
+ */
+export const retryImportJob = mutation({
+  args: { importJobId: v.id("importJobs") },
+  returns: v.object({
+    workflowId: v.string(),
+    clearedRowCount: v.number(),
+  }),
+  handler: async (ctx, args): Promise<{
+    workflowId: string;
+    clearedRowCount: number;
+  }> => {
+    assertSingleUserLocalMode();
+    const job = await ctx.db.get(args.importJobId);
+    if (!job) throw new Error("Import job not found");
+
+    if (job.status === "accepted") {
+      throw new Error(
+        "Cannot retry an accepted job. Reject the rows or delete the file first.",
+      );
+    }
+
+    if (job.workflowId) {
+      try {
+        await workflowManager.cancel(ctx, job.workflowId as WorkflowId);
+      } catch {
+        // The workflow may already be in a terminal state; ignore.
+      }
+      try {
+        await workflowManager.cleanup(ctx, job.workflowId as WorkflowId);
+      } catch {
+        // Cleanup is best-effort.
+      }
+    }
+
+    const existingRows = await ctx.db
+      .query("importRows")
+      .withIndex("by_job_row", (q) => q.eq("importJobId", args.importJobId))
+      .collect();
+
+    let clearedRowCount = 0;
+    for (const row of existingRows) {
+      if (row.status === "accepted") continue;
+      await ctx.db.delete(row._id);
+      clearedRowCount += 1;
+    }
+
+    const now = Date.now();
+    await ctx.db.patch(args.importJobId, {
+      status: "queued",
+      redactedError: undefined,
+      parserId: undefined,
+      accountSuggestion: undefined,
+      reconciliationStatus: undefined,
+      provisionalReason: undefined,
+      reconciliationDetail: undefined,
+      updatedAt: now,
+    });
+    await ctx.db.patch(job.statementFileId, {
+      status: "queued",
+      redactedError: undefined,
+      updatedAt: now,
+    });
+
+    const workflowId = await workflowManager.start(
+      ctx,
+      internal.importWorkflow.importStatementWorkflow,
+      { importJobId: args.importJobId },
+    );
+
+    await ctx.db.patch(args.importJobId, {
+      workflowId,
+      updatedAt: Date.now(),
+    });
+
+    return { workflowId, clearedRowCount };
+  },
+});
+
 export const updateReviewRow = mutation({
   args: {
     importRowId: v.id("importRows"),
     normalizedDescription: v.optional(v.string()),
     normalizedCategory: v.optional(v.string()),
     normalizedIncurredDate: v.optional(v.string()),
+    normalizedTransactionDate: v.optional(v.string()),
+    normalizedPostedDate: v.optional(v.string()),
     normalizedAmountCents: v.optional(v.number()),
     normalizedType: v.optional(transactionTypeValidator),
     accountId: v.optional(v.id("accounts")),
+    originalDescription: v.optional(v.string()),
+    memo: v.optional(v.string()),
+    merchantName: v.optional(v.string()),
+    normalizedMerchantName: v.optional(v.string()),
+    bankTransactionId: v.optional(v.string()),
+    referenceNumber: v.optional(v.string()),
+    checkNumber: v.optional(v.string()),
+    currencyCode: v.optional(v.string()),
+    importedBalanceCents: v.optional(v.number()),
+    postingStatus: v.optional(postingStatusValidator),
+    pendingMatchesKey: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
@@ -260,6 +432,18 @@ export const updateReviewRow = mutation({
       assertIsoDate("Incurred date", args.normalizedIncurredDate);
       patch.normalizedIncurredDate = args.normalizedIncurredDate;
     }
+    if (args.normalizedTransactionDate !== undefined) {
+      if (args.normalizedTransactionDate.trim().length > 0) {
+        assertIsoDate("Transaction date", args.normalizedTransactionDate);
+      }
+      patch.normalizedTransactionDate = normalizeOptionalString(args.normalizedTransactionDate);
+    }
+    if (args.normalizedPostedDate !== undefined) {
+      if (args.normalizedPostedDate.trim().length > 0) {
+        assertIsoDate("Posted date", args.normalizedPostedDate);
+      }
+      patch.normalizedPostedDate = normalizeOptionalString(args.normalizedPostedDate);
+    }
     if (args.normalizedAmountCents !== undefined) {
       if (args.normalizedAmountCents <= 0 || !Number.isFinite(args.normalizedAmountCents)) {
         throw new Error("Amount must be positive cents");
@@ -273,6 +457,39 @@ export const updateReviewRow = mutation({
         if (!acct) throw new Error("Account not found");
       }
       patch.accountId = args.accountId;
+    }
+    if (args.originalDescription !== undefined) {
+      patch.originalDescription = normalizeOptionalString(args.originalDescription);
+    }
+    if (args.memo !== undefined) {
+      patch.memo = normalizeOptionalString(args.memo);
+    }
+    if (args.merchantName !== undefined) {
+      patch.merchantName = normalizeOptionalString(args.merchantName);
+    }
+    if (args.normalizedMerchantName !== undefined) {
+      patch.normalizedMerchantName = normalizeOptionalString(args.normalizedMerchantName);
+    }
+    if (args.bankTransactionId !== undefined) {
+      patch.bankTransactionId = normalizeOptionalString(args.bankTransactionId);
+    }
+    if (args.referenceNumber !== undefined) {
+      patch.referenceNumber = normalizeOptionalString(args.referenceNumber);
+    }
+    if (args.checkNumber !== undefined) {
+      patch.checkNumber = normalizeOptionalString(args.checkNumber);
+    }
+    if (args.currencyCode !== undefined) {
+      patch.currencyCode = normalizeOptionalString(args.currencyCode);
+    }
+    if (args.importedBalanceCents !== undefined) {
+      patch.importedBalanceCents = args.importedBalanceCents;
+    }
+    if (args.postingStatus !== undefined) {
+      patch.postingStatus = args.postingStatus;
+    }
+    if (args.pendingMatchesKey !== undefined) {
+      patch.pendingMatchesKey = normalizeOptionalString(args.pendingMatchesKey);
     }
 
     await ctx.db.patch(args.importRowId, patch);
@@ -335,22 +552,51 @@ export const acceptImportRow = mutation({
       .query("transactions")
       .withIndex("by_duplicateKey", (q) => q.eq("duplicateKey", duplicateKey))
       .first();
-    if (duplicateTx && !args.forceAcceptDuplicate) {
-      throw new Error("A matching transaction already exists for this row.");
+    const bankDupTx = await findBankDuplicateTransaction(
+      ctx,
+      row.bankTransactionId,
+      accountId,
+    );
+
+    if (duplicateTx && bankDupTx && duplicateTx._id !== bankDupTx._id) {
+      throw new Error(
+        "Conflicting duplicates: composite key and bank id match different existing transactions.",
+      );
     }
-    if (duplicateTx && args.forceAcceptDuplicate) {
-      await ctx.db.patch(row._id, {
-        status: "accepted",
-        acceptedTransactionId: duplicateTx._id,
-        duplicateKey,
-        updatedAt: Date.now(),
-      });
-      await recountImportJob(ctx, row.importJobId);
-      return duplicateTx._id;
+
+    if (!args.forceAcceptDuplicate) {
+      if (duplicateTx) {
+        throw new Error("A matching transaction already exists for this row.");
+      }
+      if (bankDupTx) {
+        throw new Error(
+          "A transaction with this bank transaction id already exists for this account.",
+        );
+      }
+    }
+
+    if (args.forceAcceptDuplicate) {
+      const target = duplicateTx ?? bankDupTx;
+      if (target) {
+        await ctx.db.patch(row._id, {
+          status: "accepted",
+          acceptedTransactionId: target._id,
+          duplicateKey,
+          updatedAt: Date.now(),
+        });
+        await recountImportJob(ctx, row.importJobId);
+        return target._id;
+      }
     }
 
     const markCleared = args.markCleared ?? false;
     const clearedDate = markCleared ? row.normalizedIncurredDate : undefined;
+
+    const merchantId = await resolveMerchantIdFromRow(ctx, row);
+    const bankTxnId = normalizeOptionalString(row.bankTransactionId);
+    const transactionDate = normalizeOptionalString(row.normalizedTransactionDate);
+    const postedDate = normalizeOptionalString(row.normalizedPostedDate);
+    const postingStatus = row.postingStatus ?? "posted";
 
     const now = Date.now();
     const transactionId = await ctx.db.insert("transactions", {
@@ -360,6 +606,19 @@ export const acceptImportRow = mutation({
       description,
       category: row.normalizedCategory,
       incurredDate: row.normalizedIncurredDate,
+      transactionDate,
+      postedDate,
+      merchantName: normalizeOptionalString(row.merchantName),
+      merchantId,
+      originalDescription: normalizeOptionalString(row.originalDescription) ?? description,
+      memo: normalizeOptionalString(row.memo),
+      bankTransactionId: bankTxnId,
+      referenceNumber: normalizeOptionalString(row.referenceNumber),
+      checkNumber: normalizeOptionalString(row.checkNumber),
+      currencyCode: normalizeOptionalString(row.currencyCode),
+      importedBalanceCents: row.importedBalanceCents,
+      postingStatus,
+      pendingMatchesKey: normalizeOptionalString(row.pendingMatchesKey),
       isCleared: markCleared,
       clearedDate,
       sourceImportRowId: row._id,
@@ -537,6 +796,7 @@ export const linkImportJobToAccount = mutation({
     });
 
     await recomputeJobRowStateForAccount(ctx, args.importJobId, targetAccountId);
+    await syncStatementReconciliation(ctx, args.importJobId);
     await recountImportJob(ctx, args.importJobId);
 
     return {

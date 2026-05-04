@@ -3,19 +3,11 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { internalMutation, internalQuery } from "./_generated/server";
 import { buildTransactionDuplicateKey } from "./lib/ids";
-import { accountSuggestionValidator, transactionTypeValidator } from "./validators";
-
-export const normalizedRowValidator = v.object({
-  rowIndex: v.number(),
-  rawSummary: v.string(),
-  normalizedDescription: v.string(),
-  normalizedCategory: v.optional(v.string()),
-  normalizedIncurredDate: v.string(),
-  normalizedAmountCents: v.number(),
-  normalizedType: transactionTypeValidator,
-  confidence: v.number(),
-  rowError: v.optional(v.string()),
-});
+import { syncStatementReconciliation } from "./lib/statementReconciliation";
+import {
+  accountSuggestionValidator,
+  normalizedRowValidator,
+} from "./validators";
 
 export const getJobContext = internalQuery({
   args: { importJobId: v.id("importJobs") },
@@ -150,6 +142,7 @@ export const persistParseResults = internalMutation({
     }
 
     const seenKeys = new Set<string>();
+    const seenBankIds = new Set<string>();
 
     for (const row of args.rows) {
       const duplicateKey = buildTransactionDuplicateKey({
@@ -178,6 +171,24 @@ export const persistParseResults = internalMutation({
             .first();
           if (existingTx) markDup = true;
         }
+
+        const bankId = row.bankTransactionId?.trim();
+        if (!markDup && bankId) {
+          if (seenBankIds.has(bankId)) markDup = true;
+          else seenBankIds.add(bankId);
+        }
+        if (!markDup && bankId && job.accountId) {
+          const existingBank = await ctx.db
+            .query("transactions")
+            .withIndex("by_bank_transaction_id", (q) =>
+              q.eq("bankTransactionId", bankId),
+            )
+            .first();
+          if (existingBank && existingBank.accountId === job.accountId) {
+            markDup = true;
+          }
+        }
+
         if (markDup) status = "duplicate";
       } else {
         dupKey = undefined;
@@ -198,10 +209,24 @@ export const persistParseResults = internalMutation({
         rowIndex: row.rowIndex,
         rawSummary: row.rawSummary,
         normalizedDescription: row.normalizedDescription,
+        originalDescription: row.originalDescription,
+        memo: row.memo,
+        merchantName: row.merchantName,
+        normalizedMerchantName: row.normalizedMerchantName,
+        suggestedMerchantName: row.suggestedMerchantName,
         normalizedCategory: row.normalizedCategory,
         normalizedIncurredDate: row.normalizedIncurredDate,
+        normalizedTransactionDate: row.normalizedTransactionDate,
+        normalizedPostedDate: row.normalizedPostedDate,
         normalizedAmountCents: row.normalizedAmountCents,
         normalizedType: row.normalizedType,
+        bankTransactionId: row.bankTransactionId,
+        referenceNumber: row.referenceNumber,
+        checkNumber: row.checkNumber,
+        currencyCode: row.currencyCode,
+        importedBalanceCents: row.importedBalanceCents,
+        postingStatus: row.postingStatus,
+        pendingMatchesKey: row.pendingMatchesKey,
         confidence: row.confidence,
         duplicateKey: dupKey,
         redactedError: row.rowError,
@@ -218,11 +243,15 @@ export const persistParseResults = internalMutation({
       }
     }
 
-    await ctx.db.patch(job.statementFileId, {
-      status: "parsed",
-      updatedAt: now,
-    });
+    const statementFile = await ctx.db.get(job.statementFileId);
+    if (statementFile) {
+      await ctx.db.patch(statementFile._id, {
+        status: "parsed",
+        updatedAt: now,
+      });
+    }
 
+    await syncStatementReconciliation(ctx, args.importJobId);
     await recountImportJob(ctx, args.importJobId);
     return null;
   },

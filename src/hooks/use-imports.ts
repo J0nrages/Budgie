@@ -26,6 +26,9 @@ export function useImports(selectedJobId: Id<"importJobs"> | undefined) {
   const linkImportJobToAccount = useMutation(api.imports.linkImportJobToAccount);
   const uploadUrl = useMutation(api.statements.generateUploadUrl);
   const finalizeUpload = useMutation(api.statements.finalizeUploadedStatement);
+  const merchants = useQuery(api.merchants.listMerchants, {});
+  const createMerchant = useMutation(api.merchants.createMerchant);
+  const upsertMerchantAlias = useMutation(api.merchants.upsertMerchantAlias);
 
   return {
     jobs,
@@ -39,5 +42,8 @@ export function useImports(selectedJobId: Id<"importJobs"> | undefined) {
     linkImportJobToAccount,
     uploadUrl,
     finalizeUpload,
+    merchants,
+    createMerchant,
+    upsertMerchantAlias,
   };
 }

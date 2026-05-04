@@ -2,39 +2,32 @@
 
 import type { Doc, Id } from "convex/_generated/dataModel";
 import { useConvexConnectionState } from "convex/react";
-import { Loader2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { Loader2, Upload } from "lucide-react";
+import { useCallback, useMemo, useState } from "react";
 import { AccountForm } from "@/components/accounts/account-form";
 import { AccountList } from "@/components/accounts/account-list";
-import { BasisToggle } from "@/components/dashboard/basis-toggle";
-import { DemoDataControls } from "@/components/demo-data-controls";
-import { SummaryCards } from "@/components/dashboard/summary-cards";
+import { SettingsDialog } from "@/components/dashboard/settings-dialog";
 import { UploadPanel } from "@/components/imports/upload-panel";
+import { AppFooter } from "@/components/layout/app-footer";
+import { SummaryCards } from "@/components/dashboard/summary-cards";
 import { LedgerTable } from "@/components/ledger/ledger-table";
 import { TransactionForm } from "@/components/ledger/transaction-form";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useAccounts } from "@/hooks/use-accounts";
+import { useImportFileUpload } from "@/hooks/use-import-file-upload";
 import { useImports } from "@/hooks/use-imports";
 import { useIsClient } from "@/hooks/use-is-client";
 import { useTransactions } from "@/hooks/use-transactions";
 import type { AccountLike, TransactionLike } from "@/lib/ledger";
-import type { Basis } from "@/types/finance";
+import type { Basis, TransactionType } from "@/types/finance";
 
 export function FinanceApp() {
   const [basis, setBasis] = useState<Basis>("cash");
-  const [selectedJobId, setSelectedJobId] = useState<
-    Id<"importJobs"> | undefined
-  >();
+  const [ledgerTab, setLedgerTab] = useState<
+    "transactions" | "accounts" | "imports"
+  >("transactions");
   const [ledgerAccountId, setLedgerAccountId] = useState<
     Id<"accounts"> | undefined
   >();
@@ -44,6 +37,9 @@ export function FinanceApp() {
     null,
   );
   const [editingTx, setEditingTx] = useState<Doc<"transactions"> | null>(null);
+  const [editingTxInitialType, setEditingTxInitialType] = useState<
+    TransactionType | undefined
+  >();
 
   const isClient = useIsClient();
   const convexConnection = useConvexConnectionState();
@@ -63,10 +59,22 @@ export function FinanceApp() {
     conn.connectionRetries >= 8;
   const accountsApi = useAccounts();
   const { accounts } = accountsApi;
-  const ledgerAccountEffective = ledgerAccountId ?? accounts?.[0]?._id;
   const txApi = useTransactions(undefined);
   const { transactions } = txApi;
-  const importsApi = useImports(selectedJobId);
+  const [selectedImportJobId, setSelectedImportJobId] = useState<
+    Id<"importJobs"> | undefined
+  >(undefined);
+  const importsApi = useImports(selectedImportJobId);
+  const linkedAccountForUpload = useCallback(
+    () => ledgerAccountId,
+    [ledgerAccountId],
+  );
+  const {
+    inputRef: statementUploadInputRef,
+    busy: statementUploadBusy,
+    onFile: onStatementUploadFile,
+    openFileDialog: openStatementUploadDialog,
+  } = useImportFileUpload(importsApi, linkedAccountForUpload);
 
   const accountLikes: AccountLike[] = useMemo(
     () =>
@@ -93,21 +101,18 @@ export function FinanceApp() {
         isCleared: t.isCleared,
         clearedDate: t.clearedDate,
         createdAt: t.createdAt,
+        postingStatus: t.postingStatus,
       })),
     [transactions],
   );
 
   if (!convexLive) {
     return (
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-4 py-8">
+      <div className="mx-auto flex min-h-dvh w-full max-w-6xl flex-col gap-8 px-4 py-8">
         <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="flex flex-col gap-1">
-            <h1 className="text-2xl font-semibold tracking-tight">Budgeter</h1>
-            <p className="text-sm text-muted-foreground">
-              Local-only finance dashboard — no authentication in v1.
-            </p>
-          </div>
-          <ThemeToggle />
+          <h1 className="text-3xl font-bold leading-tight tracking-tight sm:text-4xl">
+            Budgeter
+          </h1>
         </header>
         <div
           className={
@@ -144,117 +149,188 @@ export function FinanceApp() {
             </div>
           )}
         </div>
+
+        <footer
+          className="mt-auto flex justify-end border-t border-border pt-8"
+          role="contentinfo"
+          aria-label="Theme"
+        >
+          <ThemeToggle />
+        </footer>
       </div>
     );
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-4 py-8">
-      <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Budgeter</h1>
-          <p className="text-sm text-muted-foreground">
-            Local-only finance dashboard — no authentication in v1.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <ThemeToggle />
-          <BasisToggle basis={basis} onBasisChange={setBasis} />
-          <DemoDataControls />
-          <Button size="sm" onClick={() => {
-            setEditingAccount(null);
-            setAccountDialog(true);
-          }}>
-            New account
-          </Button>
-        </div>
-      </header>
+    <div className="mx-auto flex min-h-dvh w-full max-w-6xl flex-col px-4 py-8">
+      <div className="flex flex-col gap-8">
+        <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+          <h1 className="text-3xl font-bold leading-tight tracking-tight sm:text-4xl">
+            Budgeter
+          </h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <SettingsDialog basis={basis} onBasisChange={setBasis} />
+          </div>
+        </header>
 
-      <SummaryCards
-        accounts={accountLikes}
-        transactions={txLikes}
-        basis={basis}
-      />
+        <SummaryCards
+          accounts={accountLikes}
+          transactions={txLikes}
+          basis={basis}
+        />
 
-      <Tabs defaultValue="transactions">
-        <TabsList>
-          <TabsTrigger value="accounts">Accounts</TabsTrigger>
-          <TabsTrigger value="imports">Imports</TabsTrigger>
-          <TabsTrigger value="transactions">Transactions</TabsTrigger>
-        </TabsList>
-        <TabsContent value="accounts" className="space-y-4 pt-4">
-          <AccountList
-            accounts={accounts}
-            transactions={txLikes}
-            basis={basis}
-            onSelectAccount={(a) => {
-              setEditingAccount(a);
-              setAccountDialog(true);
-            }}
-          />
-        </TabsContent>
-        <TabsContent value="imports" className="pt-4">
-          <UploadPanel
-            jobs={importsApi.jobs}
-            effectiveJobId={importsApi.effectiveJobId}
-            selectedJobId={selectedJobId}
-            onSelectJob={setSelectedJobId}
-            accounts={accounts}
-            importsApi={importsApi}
-          />
-        </TabsContent>
-        <TabsContent value="transactions" className="pt-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>Running ledger</CardTitle>
-              <CardDescription>
-                Pick an account to view chronological activity for the selected
-                accounting basis.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <LedgerTable
-                accounts={accounts}
-                transactions={transactions}
-                basis={basis}
-                filterAccountId={ledgerAccountEffective}
-                onFilterAccount={setLedgerAccountId}
-                onAdd={() => {
-                  setEditingTx(null);
-                  setTxDialog(true);
-                }}
-                onEdit={(tx) => {
-                  setEditingTx(tx);
-                  setTxDialog(true);
-                }}
+        <Tabs
+          value={ledgerTab}
+          className="gap-0"
+          onValueChange={(value) =>
+            setLedgerTab(value as "transactions" | "accounts" | "imports")
+          }
+        >
+          <div className="flex items-center justify-between border-b pb-2">
+            <TabsList variant="line" className="h-auto p-0">
+              <TabsTrigger
+                value="transactions"
+                className="px-4 py-2 text-base data-active:after:bottom-[-9px]"
+              >
+                Ledger
+              </TabsTrigger>
+              <TabsTrigger
+                value="accounts"
+                className="px-4 py-2 text-base data-active:after:bottom-[-9px]"
+              >
+                Accounts
+              </TabsTrigger>
+              <TabsTrigger
+                value="imports"
+                className="px-4 py-2 text-base data-active:after:bottom-[-9px]"
+              >
+                Imports
+              </TabsTrigger>
+            </TabsList>
+            <div className="flex items-center gap-2">
+              <input
+                ref={statementUploadInputRef}
+                type="file"
+                multiple
+                accept=".csv,.pdf,text/csv,application/pdf"
+                disabled={statementUploadBusy}
+                onChange={onStatementUploadFile}
+                className="hidden"
+                aria-hidden
+                tabIndex={-1}
               />
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={statementUploadBusy}
+                onClick={openStatementUploadDialog}
+                aria-label="Upload file for import"
+              >
+                <Upload
+                  className="size-3.5 shrink-0"
+                  aria-hidden
+                />
+                {statementUploadBusy ? "Uploading…" : "Upload"}
+              </Button>
+              {ledgerTab === "transactions" ? (
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    setEditingTx(null);
+                    setEditingTxInitialType(undefined);
+                    setTxDialog(true);
+                  }}
+                >
+                  Add transaction
+                </Button>
+              ) : ledgerTab === "accounts" ? (
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    setEditingAccount(null);
+                    setAccountDialog(true);
+                  }}
+                >
+                  Add account
+                </Button>
+              ) : null}
+            </div>
+          </div>
 
-      <Separator />
+          <TabsContent value="transactions">
+            <LedgerTable
+              accounts={accounts}
+              transactions={transactions}
+              basis={basis}
+              filterAccountId={ledgerAccountId}
+              onFilterAccount={setLedgerAccountId}
+              onEdit={(tx, initialType) => {
+                setEditingTx(tx);
+                setEditingTxInitialType(initialType);
+                setTxDialog(true);
+              }}
+              onTypeChange={async (transactionId, type) => {
+                await txApi.updateTx({ transactionId, type });
+              }}
+            />
+          </TabsContent>
+          <TabsContent value="accounts" className="pt-6">
+            <AccountList
+              accounts={accounts}
+              transactions={txLikes}
+              basis={basis}
+              onSelectAccount={(a) => {
+                setLedgerAccountId(a._id);
+                setLedgerTab("transactions");
+              }}
+              onEditAccount={(a) => {
+                setEditingAccount(a);
+                setAccountDialog(true);
+              }}
+            />
+          </TabsContent>
+          <TabsContent value="imports" className="pt-6">
+            <UploadPanel
+              jobs={importsApi.jobs}
+              effectiveJobId={importsApi.effectiveJobId}
+              selectedJobId={selectedImportJobId}
+              onSelectJob={setSelectedImportJobId}
+              accounts={accounts}
+              importsApi={importsApi}
+            />
+          </TabsContent>
+        </Tabs>
+      </div>
 
-      <AccountForm
-        open={accountDialog}
-        onOpenChange={(o) => {
-          setAccountDialog(o);
-          if (!o) setEditingAccount(null);
-        }}
-        editing={editingAccount}
-        accountsApi={accountsApi}
-      />
+      <div>
+        <AccountForm
+          open={accountDialog}
+          onOpenChange={(o) => {
+            setAccountDialog(o);
+            if (!o) setEditingAccount(null);
+          }}
+          editing={editingAccount}
+          accountsApi={accountsApi}
+        />
 
-      <TransactionForm
-        open={txDialog}
-        onOpenChange={(o) => {
-          setTxDialog(o);
-          if (!o) setEditingTx(null);
-        }}
-        editing={editingTx}
-        accounts={accounts}
-        txApi={txApi}
-      />
+        <TransactionForm
+          open={txDialog}
+          onOpenChange={(o) => {
+            setTxDialog(o);
+            if (!o) {
+              setEditingTx(null);
+              setEditingTxInitialType(undefined);
+            }
+          }}
+          editing={editingTx}
+          initialType={editingTxInitialType}
+          accounts={accounts}
+          txApi={txApi}
+        />
+      </div>
+
+      <AppFooter />
     </div>
   );
 }
