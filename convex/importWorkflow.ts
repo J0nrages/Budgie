@@ -20,10 +20,10 @@ export const importStatementWorkflow = workflowManager.define({
     importJobId: args.importJobId,
     parserId: parsed.parserId,
     accountSuggestion: parsed.accountSuggestion,
+    parserWarnings: parsed.parserWarnings,
     fatalError: parsed.fatalError,
     rows: parsed.rows,
   });
 
   return null;
 });
-

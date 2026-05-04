@@ -1,15 +1,23 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import type { MutationCtx } from "./_generated/server";
 import { mutation, query } from "./_generated/server";
 import { assertSingleUserLocalMode } from "./lib/auth";
 import { assertIsoDate } from "./lib/datesIso";
 import { recountImportJob } from "./importWorkflowSteps";
-import { buildTransactionDuplicateKey } from "./lib/ids";
-import { normalizedMerchantKey } from "./lib/merchantKey";
+import { createAccountRecord, normalizeOptionalString } from "./lib/accountRecords";
+import {
+  acceptImportRowRecord,
+  applyReadyImportRows,
+  buildAccountMetadataWarnings,
+  buildSuggestedDraftFromSuggestion,
+  findMatchingAccountForSuggestion,
+  recomputeJobRowStateForAccount,
+  reclassifyEditedRow,
+} from "./lib/importReview";
 import { syncStatementReconciliation } from "./lib/statementReconciliation";
 import { workflowManager } from "./lib/workflow";
+import { summarizeImportRows } from "../src/lib/import-review";
 import {
   accountSuggestionValidator,
   accountSubtypeValidator,
@@ -18,249 +26,6 @@ import {
   transactionTypeValidator,
 } from "./validators";
 import type { WorkflowId } from "@convex-dev/workflow";
-
-function normalizeOptionalString(value: string | undefined): string | undefined {
-  if (value === undefined) return undefined;
-  const t = value.trim();
-  return t.length === 0 ? undefined : t;
-}
-
-function hasAccountPatchContent(patch: Partial<Doc<"accounts">>): boolean {
-  return Object.keys(patch).some((key) => key !== "updatedAt");
-}
-
-async function findBankDuplicateTransaction(
-  ctx: MutationCtx,
-  bankTransactionId: string | undefined,
-  accountId: Id<"accounts">,
-): Promise<Doc<"transactions"> | null> {
-  const id = bankTransactionId?.trim();
-  if (!id) return null;
-  const hits = await ctx.db
-    .query("transactions")
-    .withIndex("by_bank_transaction_id", (q) => q.eq("bankTransactionId", id))
-    .take(20);
-  return hits.find((t) => t.accountId === accountId) ?? null;
-}
-
-async function resolveMerchantIdFromRow(
-  ctx: MutationCtx,
-  row: Doc<"importRows">,
-): Promise<Id<"merchants"> | undefined> {
-  const raw = row.normalizedMerchantName?.trim() ?? row.merchantName?.trim();
-  if (!raw) return undefined;
-  const key = normalizedMerchantKey(raw);
-  if (key.length === 0) return undefined;
-  const direct = await ctx.db
-    .query("merchants")
-    .withIndex("by_normalized_key", (q) => q.eq("normalizedKey", key))
-    .first();
-  if (direct) return direct._id;
-  const alias = await ctx.db
-    .query("merchantAliases")
-    .withIndex("by_alias_pattern", (q) => q.eq("aliasPattern", key))
-    .first();
-  return alias?.merchantId;
-}
-
-function buildAccountSuggestionPatch(
-  account: Doc<"accounts">,
-  suggestion: Doc<"importJobs">["accountSuggestion"],
-): Partial<Doc<"accounts">> {
-  if (!suggestion) return {};
-
-  const patch: Partial<Doc<"accounts">> = {};
-  if (account.issuer !== suggestion.issuer) patch.issuer = suggestion.issuer;
-  if (
-    suggestion.institution !== undefined &&
-    account.institution !== suggestion.institution
-  ) {
-    patch.institution = suggestion.institution;
-  }
-  if (account.lastFour !== suggestion.lastFour) patch.lastFour = suggestion.lastFour;
-  if (
-    suggestion.creditLimitCents !== undefined &&
-    account.creditLimitCents !== suggestion.creditLimitCents
-  ) {
-    patch.creditLimitCents = suggestion.creditLimitCents;
-  }
-  if (suggestion.aprBps !== undefined && account.aprBps !== suggestion.aprBps) {
-    patch.aprBps = suggestion.aprBps;
-  }
-  if (
-    suggestion.statementDay !== undefined &&
-    account.statementDay !== suggestion.statementDay
-  ) {
-    patch.statementDay = suggestion.statementDay;
-  }
-  if (
-    suggestion.paymentDueDay !== undefined &&
-    account.paymentDueDay !== suggestion.paymentDueDay
-  ) {
-    patch.paymentDueDay = suggestion.paymentDueDay;
-  }
-
-  return patch;
-}
-
-async function syncLenderProfileFromSuggestion(
-  ctx: MutationCtx,
-  accountId: Id<"accounts">,
-  suggestion: Doc<"importJobs">["accountSuggestion"],
-  now: number,
-): Promise<void> {
-  if (
-    !suggestion ||
-    (suggestion.aprBps === undefined &&
-      suggestion.statementDay === undefined &&
-      suggestion.paymentDueDay === undefined)
-  ) {
-    return;
-  }
-
-  const existing = await ctx.db
-    .query("lenderProfiles")
-    .withIndex("by_account", (q) => q.eq("accountId", accountId))
-    .first();
-
-  if (existing) {
-    const patch: Partial<Doc<"lenderProfiles">> = { updatedAt: now };
-    if (suggestion.aprBps !== undefined) patch.aprBps = suggestion.aprBps;
-    if (suggestion.statementDay !== undefined) {
-      patch.statementDay = suggestion.statementDay;
-    }
-    if (suggestion.paymentDueDay !== undefined) {
-      patch.paymentDueDay = suggestion.paymentDueDay;
-    }
-    await ctx.db.patch(existing._id, patch);
-    return;
-  }
-
-  await ctx.db.insert("lenderProfiles", {
-    accountId,
-    aprBps: suggestion.aprBps,
-    statementDay: suggestion.statementDay,
-    paymentDueDay: suggestion.paymentDueDay,
-    interestMethod: "statementBalanceEstimate",
-    createdAt: now,
-    updatedAt: now,
-  });
-}
-
-async function recomputeJobRowStateForAccount(
-  ctx: MutationCtx,
-  importJobId: Id<"importJobs">,
-  accountId: Id<"accounts">,
-): Promise<void> {
-  const rows = await ctx.db
-    .query("importRows")
-    .withIndex("by_job_row", (q) => q.eq("importJobId", importJobId))
-    .collect();
-
-  const seenKeys = new Set<string>();
-  const seenBankIds = new Set<string>();
-  const now = Date.now();
-
-  for (const row of rows) {
-    if (row.status === "error") {
-      await ctx.db.patch(row._id, {
-        accountId,
-        duplicateKey: undefined,
-        updatedAt: now,
-      });
-      continue;
-    }
-
-    const duplicateKey = buildTransactionDuplicateKey({
-      incurredDate: row.normalizedIncurredDate,
-      amountCents: row.normalizedAmountCents,
-      description: row.normalizedDescription,
-      accountKey: accountId,
-    });
-
-    const bankId = row.bankTransactionId?.trim();
-
-    let status = row.status;
-    if (row.status !== "accepted" && row.status !== "rejected") {
-      let markDuplicate = seenKeys.has(duplicateKey);
-      if (!markDuplicate) seenKeys.add(duplicateKey);
-
-      if (!markDuplicate && bankId) {
-        if (seenBankIds.has(bankId)) markDuplicate = true;
-        else seenBankIds.add(bankId);
-      }
-
-      if (!markDuplicate) {
-        const existingTx = await ctx.db
-          .query("transactions")
-          .withIndex("by_duplicateKey", (q) => q.eq("duplicateKey", duplicateKey))
-          .first();
-        if (existingTx) markDuplicate = true;
-      }
-
-      if (!markDuplicate && bankId) {
-        const bankHit = await findBankDuplicateTransaction(ctx, bankId, accountId);
-        if (bankHit) markDuplicate = true;
-      }
-
-      status = markDuplicate ? "duplicate" : "needsReview";
-    }
-
-    await ctx.db.patch(row._id, {
-      accountId,
-      duplicateKey,
-      status,
-      updatedAt: now,
-    });
-  }
-}
-
-async function refreshRowDuplicateState(
-  ctx: MutationCtx,
-  row: Doc<"importRows">,
-): Promise<void> {
-  if (row.status === "accepted" || row.status === "rejected") return;
-
-  const job = await ctx.db.get(row.importJobId);
-  if (!job) return;
-
-  const duplicateKey = buildTransactionDuplicateKey({
-    incurredDate: row.normalizedIncurredDate,
-    amountCents: row.normalizedAmountCents,
-    description: row.normalizedDescription,
-    accountKey: row.accountId ?? job.accountId ?? "unassigned",
-  });
-
-  let status: Doc<"importRows">["status"] = row.status;
-  if (row.status === "error") {
-    return;
-  }
-
-  const accountId = row.accountId ?? job.accountId;
-
-  const existingTx = await ctx.db
-    .query("transactions")
-    .withIndex("by_duplicateKey", (q) => q.eq("duplicateKey", duplicateKey))
-    .first();
-  let markDuplicate = Boolean(existingTx);
-
-  if (!markDuplicate && accountId) {
-    const bankHit = await findBankDuplicateTransaction(
-      ctx,
-      row.bankTransactionId,
-      accountId,
-    );
-    markDuplicate = Boolean(bankHit);
-  }
-
-  status = markDuplicate ? "duplicate" : "needsReview";
-
-  await ctx.db.patch(row._id, {
-    duplicateKey,
-    status,
-    updatedAt: Date.now(),
-  });
-}
 
 export const listImportJobs = query({
   args: {},
@@ -290,6 +55,43 @@ export const getAccountSuggestionForJob = query({
     assertSingleUserLocalMode();
     const job = await ctx.db.get(args.importJobId);
     return job?.accountSuggestion ?? null;
+  },
+});
+
+export const getImportReviewWorkspace = query({
+  args: { importJobId: v.id("importJobs") },
+  returns: v.union(v.any(), v.null()),
+  handler: async (ctx, args) => {
+    assertSingleUserLocalMode();
+    const job = await ctx.db.get(args.importJobId);
+    if (!job) return null;
+
+    const statementFile = await ctx.db.get(job.statementFileId);
+    const account = job.accountId ? await ctx.db.get(job.accountId) : null;
+    const rows = await ctx.db
+      .query("importRows")
+      .withIndex("by_job_row", (q) => q.eq("importJobId", args.importJobId))
+      .collect();
+    const fileUrl =
+      statementFile && statementFile.originalStorageStatus === "available"
+        ? await ctx.storage.getUrl(statementFile.storageId)
+        : null;
+    const summary = summarizeImportRows(rows);
+
+    return {
+      job,
+      statementFile,
+      account,
+      fileUrl,
+      rows,
+      summary,
+      readyRows: rows.filter((row) => row.status === "needsReview"),
+      exceptionRows: rows.filter(
+        (row) => row.status === "duplicate" || row.status === "error",
+      ),
+      canApplyReadyRows: summary.canApplyReadyRows && Boolean(job.accountId),
+      suggestedAccountDraft: buildSuggestedDraftFromSuggestion(job.accountSuggestion),
+    };
   },
 });
 
@@ -357,9 +159,14 @@ export const retryImportJob = mutation({
     const now = Date.now();
     await ctx.db.patch(args.importJobId, {
       status: "queued",
+      progressStage: "queued",
+      progressMessage: "Queued for retry.",
+      progressPercent: 0,
       redactedError: undefined,
       parserId: undefined,
       accountSuggestion: undefined,
+      parserWarnings: undefined,
+      accountMetadataWarnings: undefined,
       reconciliationStatus: undefined,
       provisionalReason: undefined,
       reconciliationDetail: undefined,
@@ -493,8 +300,8 @@ export const updateReviewRow = mutation({
     }
 
     await ctx.db.patch(args.importRowId, patch);
-    const next = await ctx.db.get(args.importRowId);
-    if (next) await refreshRowDuplicateState(ctx, next);
+    await reclassifyEditedRow(ctx, args.importRowId);
+    await syncStatementReconciliation(ctx, row.importJobId);
     await recountImportJob(ctx, row.importJobId);
     return null;
   },
@@ -515,126 +322,8 @@ export const acceptImportRow = mutation({
     const job = await ctx.db.get(row.importJobId);
     if (!job) throw new Error("Import job not found");
 
-    if (row.acceptedTransactionId) {
-      return row.acceptedTransactionId;
-    }
-
-    if (row.status === "error") {
-      throw new Error("Cannot accept a row that failed validation");
-    }
-    if (row.status === "rejected") {
-      throw new Error("Cannot accept a rejected row");
-    }
-    if (row.status === "duplicate" && !args.forceAcceptDuplicate) {
-      throw new Error(
-        "This row looks like a duplicate. Pass forceAcceptDuplicate to accept anyway.",
-      );
-    }
-
-    const accountId = row.accountId ?? job.accountId;
-    if (!accountId) {
-      throw new Error("Link an account to the import job or row before accepting.");
-    }
-
-    const description = row.normalizedDescription.trim();
-    if (description.length === 0) throw new Error("Description is required");
-
-    assertIsoDate("Incurred date", row.normalizedIncurredDate);
-
-    const duplicateKey = buildTransactionDuplicateKey({
-      incurredDate: row.normalizedIncurredDate,
-      amountCents: row.normalizedAmountCents,
-      description,
-      accountKey: accountId,
-    });
-
-    const duplicateTx = await ctx.db
-      .query("transactions")
-      .withIndex("by_duplicateKey", (q) => q.eq("duplicateKey", duplicateKey))
-      .first();
-    const bankDupTx = await findBankDuplicateTransaction(
-      ctx,
-      row.bankTransactionId,
-      accountId,
-    );
-
-    if (duplicateTx && bankDupTx && duplicateTx._id !== bankDupTx._id) {
-      throw new Error(
-        "Conflicting duplicates: composite key and bank id match different existing transactions.",
-      );
-    }
-
-    if (!args.forceAcceptDuplicate) {
-      if (duplicateTx) {
-        throw new Error("A matching transaction already exists for this row.");
-      }
-      if (bankDupTx) {
-        throw new Error(
-          "A transaction with this bank transaction id already exists for this account.",
-        );
-      }
-    }
-
-    if (args.forceAcceptDuplicate) {
-      const target = duplicateTx ?? bankDupTx;
-      if (target) {
-        await ctx.db.patch(row._id, {
-          status: "accepted",
-          acceptedTransactionId: target._id,
-          duplicateKey,
-          updatedAt: Date.now(),
-        });
-        await recountImportJob(ctx, row.importJobId);
-        return target._id;
-      }
-    }
-
-    const markCleared = args.markCleared ?? false;
-    const clearedDate = markCleared ? row.normalizedIncurredDate : undefined;
-
-    const merchantId = await resolveMerchantIdFromRow(ctx, row);
-    const bankTxnId = normalizeOptionalString(row.bankTransactionId);
-    const transactionDate = normalizeOptionalString(row.normalizedTransactionDate);
-    const postedDate = normalizeOptionalString(row.normalizedPostedDate);
-    const postingStatus = row.postingStatus ?? "posted";
-
-    const now = Date.now();
-    const transactionId = await ctx.db.insert("transactions", {
-      type: row.normalizedType,
-      amountCents: row.normalizedAmountCents,
-      accountId,
-      description,
-      category: row.normalizedCategory,
-      incurredDate: row.normalizedIncurredDate,
-      transactionDate,
-      postedDate,
-      merchantName: normalizeOptionalString(row.merchantName),
-      merchantId,
-      originalDescription: normalizeOptionalString(row.originalDescription) ?? description,
-      memo: normalizeOptionalString(row.memo),
-      bankTransactionId: bankTxnId,
-      referenceNumber: normalizeOptionalString(row.referenceNumber),
-      checkNumber: normalizeOptionalString(row.checkNumber),
-      currencyCode: normalizeOptionalString(row.currencyCode),
-      importedBalanceCents: row.importedBalanceCents,
-      postingStatus,
-      pendingMatchesKey: normalizeOptionalString(row.pendingMatchesKey),
-      isCleared: markCleared,
-      clearedDate,
-      sourceImportRowId: row._id,
-      sourceStatementFileId: row.statementFileId,
-      duplicateKey,
-      createdAt: now,
-      updatedAt: now,
-    });
-
-    await ctx.db.patch(row._id, {
-      status: "accepted",
-      acceptedTransactionId: transactionId,
-      duplicateKey,
-      updatedAt: Date.now(),
-    });
-
+    const transactionId = await acceptImportRowRecord(ctx, row, job, args);
+    await syncStatementReconciliation(ctx, row.importJobId);
     await recountImportJob(ctx, row.importJobId);
     return transactionId;
   },
@@ -655,6 +344,7 @@ export const rejectImportRow = mutation({
       status: "rejected",
       updatedAt: Date.now(),
     });
+    await syncStatementReconciliation(ctx, row.importJobId);
     await recountImportJob(ctx, row.importJobId);
     return null;
   },
@@ -677,8 +367,21 @@ export const rejectAllImportRows = mutation({
         updatedAt: Date.now(),
       });
     }
+    await syncStatementReconciliation(ctx, args.importJobId);
     await recountImportJob(ctx, args.importJobId);
     return null;
+  },
+});
+
+export const applyImportJobReadyRows = mutation({
+  args: { importJobId: v.id("importJobs") },
+  returns: v.object({ appliedCount: v.number() }),
+  handler: async (ctx, args): Promise<{ appliedCount: number }> => {
+    assertSingleUserLocalMode();
+    const appliedCount = await applyReadyImportRows(ctx, args.importJobId);
+    await syncStatementReconciliation(ctx, args.importJobId);
+    await recountImportJob(ctx, args.importJobId);
+    return { appliedCount };
   },
 });
 
@@ -698,11 +401,16 @@ export const linkImportJobToAccount = mutation({
   returns: v.object({
     accountId: v.id("accounts"),
     matchedExisting: v.boolean(),
+    autoAppliedCount: v.number(),
   }),
   handler: async (
     ctx,
     args,
-  ): Promise<{ accountId: Id<"accounts">; matchedExisting: boolean }> => {
+  ): Promise<{
+    accountId: Id<"accounts">;
+    matchedExisting: boolean;
+    autoAppliedCount: number;
+  }> => {
     assertSingleUserLocalMode();
     const job = await ctx.db.get(args.importJobId);
     if (!job) throw new Error("Import job not found");
@@ -718,13 +426,7 @@ export const linkImportJobToAccount = mutation({
     let matchedExisting = Boolean(args.accountId);
 
     if (!targetAccountId && !args.accountDraft && job.accountSuggestion) {
-      const suggestion = job.accountSuggestion;
-      const matched = await ctx.db
-        .query("accounts")
-        .withIndex("by_issuer_lastFour", (q) =>
-          q.eq("issuer", suggestion.issuer).eq("lastFour", suggestion.lastFour),
-        )
-        .first();
+      const matched = await findMatchingAccountForSuggestion(ctx, job.accountSuggestion);
       if (!matched) {
         throw new Error(
           "No matching account was found. Choose an existing account or create a new one.",
@@ -735,12 +437,9 @@ export const linkImportJobToAccount = mutation({
     }
 
     if (!targetAccountId && args.accountDraft) {
-      const accountName = args.accountDraft.name.trim();
-      if (accountName.length === 0) throw new Error("Account name is required");
-
-      const now = Date.now();
-      targetAccountId = await ctx.db.insert("accounts", {
-        name: accountName,
+      const suggestion = job.accountSuggestion;
+      targetAccountId = await createAccountRecord(ctx, {
+        name: args.accountDraft.name,
         type: args.accountDraft.type,
         subtype: args.accountDraft.subtype,
         issuer: job.accountSuggestion?.issuer,
@@ -751,16 +450,16 @@ export const linkImportJobToAccount = mutation({
         aprBps: job.accountSuggestion?.aprBps,
         statementDay: job.accountSuggestion?.statementDay,
         paymentDueDay: job.accountSuggestion?.paymentDueDay,
-        createdAt: now,
-        updatedAt: now,
+        lenderProfile:
+          args.accountDraft.subtype === "creditCard" || suggestion?.aprBps !== undefined
+            ? {
+                aprBps: suggestion?.aprBps,
+                statementDay: suggestion?.statementDay,
+                paymentDueDay: suggestion?.paymentDueDay,
+                interestMethod: "statementBalanceEstimate",
+              }
+            : undefined,
       });
-
-      await syncLenderProfileFromSuggestion(
-        ctx,
-        targetAccountId,
-        job.accountSuggestion,
-        now,
-      );
       matchedExisting = false;
     }
 
@@ -772,22 +471,14 @@ export const linkImportJobToAccount = mutation({
     if (!account) throw new Error("Account not found");
 
     const now = Date.now();
-    const accountPatch = buildAccountSuggestionPatch(account, job.accountSuggestion);
-    if (hasAccountPatchContent(accountPatch)) {
-      await ctx.db.patch(targetAccountId, {
-        ...accountPatch,
-        updatedAt: now,
-      });
-    }
-    await syncLenderProfileFromSuggestion(
-      ctx,
-      targetAccountId,
+    const accountMetadataWarnings = buildAccountMetadataWarnings(
+      account,
       job.accountSuggestion,
-      now,
     );
 
     await ctx.db.patch(args.importJobId, {
       accountId: targetAccountId,
+      accountMetadataWarnings,
       updatedAt: now,
     });
     await ctx.db.patch(statementFile._id, {
@@ -797,11 +488,22 @@ export const linkImportJobToAccount = mutation({
 
     await recomputeJobRowStateForAccount(ctx, args.importJobId, targetAccountId);
     await syncStatementReconciliation(ctx, args.importJobId);
+    const autoAppliedCount = await applyReadyImportRows(ctx, args.importJobId, {
+      onlyIfExceptionsPresent: true,
+    });
     await recountImportJob(ctx, args.importJobId);
+
+    if (autoAppliedCount > 0) {
+      await ctx.db.patch(args.importJobId, {
+        progressMessage: `Applied ${autoAppliedCount} clean row${autoAppliedCount === 1 ? "" : "s"}. Review flagged exceptions.`,
+        updatedAt: Date.now(),
+      });
+    }
 
     return {
       accountId: targetAccountId,
       matchedExisting,
+      autoAppliedCount,
     };
   },
 });

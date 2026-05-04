@@ -5,14 +5,14 @@
 - **No authentication** — anyone who can reach the deployment can read/write data.
 - **Sensitive uploads** — CSV/PDF statements may contain account identifiers and transaction detail.
 - **Logs** — parser and workflow code must not log raw file contents (see `convex/lib/redaction.ts`).
-- **Optional OCR egress** — scanned PDFs can be sent to Firecrawl only when local extraction is insufficient and `FIRECRAWL_API_KEY` is configured.
+- **PDF parsing egress** — PDFs are sent to Firecrawl `/parse` when `FIRECRAWL_API_KEY` is configured.
 
 ## Local development
 
 - Keep `.env.local` private; rotate Convex keys if leaked.
 - Prefer running Convex against a personal dev deployment, not shared demo teams.
-- If you enable Firecrawl OCR fallback, treat `FIRECRAWL_API_KEY` as sensitive.
-- Digital statement PDFs are parsed locally first with `unpdf`; Firecrawl is an OCR fallback, not the default path.
+- Treat `FIRECRAWL_API_KEY` as sensitive.
+- Statement PDFs are parsed through Firecrawl; CSV imports remain local.
 
 ## Before any public deployment
 

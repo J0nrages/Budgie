@@ -98,6 +98,8 @@ export const finalizeUploadedStatement = mutation({
       sizeBytes: args.sizeBytes,
       sha256,
       accountId: args.accountId,
+      originalRetentionPolicy: "keep",
+      originalStorageStatus: "available",
       status: "queued",
       createdAt: now,
       updatedAt: now,
@@ -107,6 +109,9 @@ export const finalizeUploadedStatement = mutation({
       statementFileId,
       accountId: args.accountId,
       status: "queued",
+      progressStage: "queued",
+      progressMessage: "Queued for parsing.",
+      progressPercent: 0,
       rowCount: 0,
       acceptedCount: 0,
       rejectedCount: 0,
@@ -185,6 +190,28 @@ export const updateStatementAccountLink = mutation({
       });
     }
 
+    return null;
+  },
+});
+
+export const deleteStoredOriginalStatement = mutation({
+  args: { statementFileId: v.id("statementFiles") },
+  returns: v.null(),
+  handler: async (ctx, args): Promise<null> => {
+    assertSingleUserLocalMode();
+    const file = await ctx.db.get(args.statementFileId);
+    if (!file) throw new Error("Statement file not found");
+    if (file.originalStorageStatus === "deleted") return null;
+    if (file.status === "processing" || file.status === "queued") {
+      throw new Error("Wait until parsing finishes before deleting the original file");
+    }
+
+    await ctx.storage.delete(file.storageId);
+    await ctx.db.patch(args.statementFileId, {
+      originalStorageStatus: "deleted",
+      originalStorageDeletedAt: Date.now(),
+      updatedAt: Date.now(),
+    });
     return null;
   },
 });

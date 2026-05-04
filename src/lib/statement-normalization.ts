@@ -35,6 +35,7 @@ export function normalizeParserRows(rows: ParserRow[]): NormalizedImportCandidat
       out.push({
         rowIndex: row.rowIndex,
         rawSummary: row.rawSummary,
+        sourceReference: `Row ${row.rowIndex + 1}`,
         normalizedDescription: desc || "(no description)",
         originalDescription: desc || undefined,
         normalizedIncurredDate: "1970-01-01",
@@ -51,6 +52,7 @@ export function normalizeParserRows(rows: ParserRow[]): NormalizedImportCandidat
       out.push({
         rowIndex: row.rowIndex,
         rawSummary: row.rawSummary,
+        sourceReference: `Row ${row.rowIndex + 1}`,
         normalizedDescription: desc || "(no description)",
         originalDescription: desc || undefined,
         normalizedIncurredDate: "1970-01-01",
@@ -83,6 +85,7 @@ export function normalizeParserRows(rows: ParserRow[]): NormalizedImportCandidat
       out.push({
         rowIndex: row.rowIndex,
         rawSummary: row.rawSummary,
+        sourceReference: `Row ${row.rowIndex + 1}`,
         normalizedDescription: desc || "(no description)",
         originalDescription: desc || undefined,
         memo: row.memo?.trim() || undefined,
@@ -125,6 +128,7 @@ export function normalizeParserRows(rows: ParserRow[]): NormalizedImportCandidat
     out.push({
       rowIndex: row.rowIndex,
       rawSummary: row.rawSummary,
+      sourceReference: `Row ${row.rowIndex + 1}`,
       normalizedDescription: desc || "(no description)",
       originalDescription: desc || undefined,
       memo: row.memo?.trim() || undefined,

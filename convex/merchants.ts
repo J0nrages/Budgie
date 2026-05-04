@@ -3,6 +3,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
 import { assertSingleUserLocalMode } from "./lib/auth";
 import { normalizedMerchantKey } from "./lib/merchantKey";
+import { normalizeLogoDomain } from "../src/lib/logo-dev";
 
 export const listMerchants = query({
   args: { limit: v.optional(v.number()) },
@@ -50,6 +51,33 @@ export const createMerchant = mutation({
       createdAt: now,
       updatedAt: now,
     });
+  },
+});
+
+export const setMerchantLogoDomain = mutation({
+  args: {
+    merchantId: v.id("merchants"),
+    /** Pass `null` or empty string after trim to clear. */
+    logoDomain: v.union(v.string(), v.null()),
+  },
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx, args): Promise<string | null> => {
+    assertSingleUserLocalMode();
+    const merchant = await ctx.db.get(args.merchantId);
+    if (!merchant) throw new Error("Merchant not found");
+    const now = Date.now();
+    if (args.logoDomain === null || args.logoDomain.trim().length === 0) {
+      await ctx.db.patch(args.merchantId, { logoDomain: undefined, updatedAt: now });
+      return null;
+    }
+    const normalized = normalizeLogoDomain(args.logoDomain);
+    if (!normalized) {
+      throw new Error(
+        "Invalid logo domain: use a hostname only (e.g. wholefoodsmarket.com or https://shopify.com)",
+      );
+    }
+    await ctx.db.patch(args.merchantId, { logoDomain: normalized, updatedAt: now });
+    return normalized;
   },
 });
 

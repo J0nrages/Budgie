@@ -9,53 +9,20 @@ import { parsePdfWithFirecrawl } from "./lib/firecrawl";
 import { sha256Hex } from "./lib/hash";
 import { redactErrorMessage } from "./lib/redaction";
 import { chooseParser } from "../src/lib/parsers/registry";
-import { extractTextWithUnpdf } from "../src/lib/parsers/pdf-extract";
 import { normalizeParserRows } from "../src/lib/statement-normalization";
 
 const MAX_BYTES = 10 * 1024 * 1024;
 
-/**
- * Stable, user-actionable hint for the case where the local `unpdf` extractor
- * cannot run in the Convex V8 isolate (its bundled `pdf.js` calls
- * `structuredClone(value, { transfer })`, which V8 isolates do not implement)
- * and no OCR fallback is configured. Surfaced verbatim on the failed job in
- * the Imports panel.
- */
-const PDF_LOCAL_PARSE_UNAVAILABLE_HINT =
-  "Local PDF text extraction is not available in this Convex runtime. " +
-  "Set FIRECRAWL_API_KEY in your Convex environment to enable OCR, " +
-  "upload the statement as CSV instead, or move this action to the Convex " +
-  "Node.js runtime (requires Node v18, 20, 22, or 24 installed).";
-
-function hasEnoughExtractedPdfText(text: string, itemCount: number): boolean {
-  const condensed = text.replace(/\s+/g, "");
-  return condensed.length >= 200 && itemCount >= 20;
-}
-
-type LocalPdfExtraction = {
-  text: string;
-  itemCount: number;
-  failure?: string;
-};
-
-async function tryUnpdfExtract(buf: ArrayBuffer): Promise<LocalPdfExtraction> {
-  try {
-    const result = await extractTextWithUnpdf(buf);
-    return { text: result.text, itemCount: result.items.length };
-  } catch (err) {
-    return {
-      text: "",
-      itemCount: 0,
-      failure: err instanceof Error ? err.message : String(err),
-    };
-  }
-}
+const PDF_FIRECRAWL_UNAVAILABLE_HINT =
+  "PDF parsing requires FIRECRAWL_API_KEY in the Convex environment. " +
+  "Set FIRECRAWL_API_KEY to enable Firecrawl /parse, or upload the statement as CSV instead.";
 
 export const parseStatementForImportJob = internalAction({
   args: { importJobId: v.id("importJobs") },
   returns: v.object({
     parserId: v.string(),
     accountSuggestion: v.optional(accountSuggestionValidator),
+    parserWarnings: v.array(v.string()),
     fatalError: v.optional(v.string()),
     rows: v.array(normalizedRowValidator),
   }),
@@ -69,27 +36,49 @@ export const parseStatementForImportJob = internalAction({
         return {
           parserId: "unknown",
           accountSuggestion: undefined,
+          parserWarnings: [],
           fatalError: "Import job not found.",
           rows: [],
         };
       }
 
+      const updateProgress = async (
+        stage:
+          | "loadingFile"
+          | "verifyingHash"
+          | "firecrawlParse"
+          | "choosingParser"
+          | "normalizingRows",
+        message: string,
+        percent: number,
+      ) => {
+        await ctx.runMutation(internal.importWorkflowSteps.updateJobProgress, {
+          importJobId: args.importJobId,
+          stage,
+          message,
+          percent,
+        });
+      };
+
       if (meta.sizeBytes <= 0 || meta.sizeBytes > MAX_BYTES) {
         return {
-          parserId: "unknown",
-          accountSuggestion: undefined,
-          fatalError: redactErrorMessage(
-            "File is empty or exceeds the maximum allowed size.",
-          ),
+            parserId: "unknown",
+            accountSuggestion: undefined,
+            parserWarnings: [],
+            fatalError: redactErrorMessage(
+              "File is empty or exceeds the maximum allowed size.",
+            ),
           rows: [],
         };
       }
 
+      await updateProgress("loadingFile", "Loading uploaded file from storage.", 15);
       const blob = await ctx.storage.get(meta.storageId);
       if (!blob) {
         return {
           parserId: "unknown",
           accountSuggestion: undefined,
+          parserWarnings: [],
           fatalError: "Uploaded file could not be loaded from storage.",
           rows: [],
         };
@@ -97,11 +86,13 @@ export const parseStatementForImportJob = internalAction({
 
       const buf = await blob.arrayBuffer();
       if (meta.sha256) {
+        await updateProgress("verifyingHash", "Verifying uploaded file hash.", 25);
         const actualSha256 = await sha256Hex(buf);
         if (actualSha256 !== meta.sha256) {
           return {
             parserId: "unknown",
             accountSuggestion: undefined,
+            parserWarnings: [],
             fatalError: redactErrorMessage(
               "Uploaded file contents did not match the recorded file hash.",
             ),
@@ -116,54 +107,50 @@ export const parseStatementForImportJob = internalAction({
       let extractedText = new TextDecoder("utf-8").decode(buf);
       let extractedMarkdown: string | undefined;
       if (isPdf) {
-        const localPdf = await tryUnpdfExtract(buf);
-        extractedText = localPdf.text;
+        if (!process.env.FIRECRAWL_API_KEY) {
+          return {
+            parserId: "unknown",
+            accountSuggestion: undefined,
+            parserWarnings: [],
+            fatalError: PDF_FIRECRAWL_UNAVAILABLE_HINT,
+            rows: [],
+          };
+        }
 
-        const localFailed = localPdf.failure !== undefined;
-        const localShort = !hasEnoughExtractedPdfText(
-          localPdf.text,
-          localPdf.itemCount,
-        );
-
-        if (localFailed || localShort) {
-          if (process.env.FIRECRAWL_API_KEY) {
-            try {
-              const firecrawlPdf = await parsePdfWithFirecrawl({
-                data: buf,
-                fileName: meta.fileName,
-                contentType: meta.contentType,
-                mode: "ocr",
-              });
-              extractedText = firecrawlPdf.markdown;
-              extractedMarkdown = firecrawlPdf.markdown;
-            } catch (err) {
-              const ocrMessage =
-                err instanceof Error ? err.message : String(err);
-              return {
-                parserId: "unknown",
-                accountSuggestion: undefined,
-                fatalError: redactErrorMessage(
-                  localFailed
-                    ? `PDF text extraction failed (${localPdf.failure}); OCR fallback failed (${ocrMessage}).`
-                    : `PDF text extraction returned too little text; OCR fallback failed (${ocrMessage}).`,
-                ),
-                rows: [],
-              };
-            }
-          } else if (localFailed) {
-            return {
-              parserId: "unknown",
-              accountSuggestion: undefined,
-              fatalError: redactErrorMessage(
-                `${PDF_LOCAL_PARSE_UNAVAILABLE_HINT} ` +
-                  `Underlying error: ${localPdf.failure}`,
-              ),
-              rows: [],
-            };
-          }
+        try {
+          await updateProgress(
+            "firecrawlParse",
+            "Sending PDF to Firecrawl /parse.",
+            40,
+          );
+          const firecrawlPdf = await parsePdfWithFirecrawl({
+            data: buf,
+            fileName: meta.fileName,
+            contentType: meta.contentType,
+            mode: "auto",
+          });
+          extractedText = firecrawlPdf.markdown;
+          extractedMarkdown = firecrawlPdf.markdown;
+          await updateProgress(
+            "firecrawlParse",
+            "Firecrawl returned parsed Markdown.",
+            65,
+          );
+        } catch (err) {
+          const parseMessage = err instanceof Error ? err.message : String(err);
+          return {
+            parserId: "unknown",
+            accountSuggestion: undefined,
+            parserWarnings: [],
+            fatalError: redactErrorMessage(
+              `Firecrawl PDF parse failed: ${parseMessage}`,
+            ),
+            rows: [],
+          };
         }
       }
 
+      await updateProgress("choosingParser", "Choosing statement parser.", 70);
       const parserInput = {
         fileName: meta.fileName,
         contentType: meta.contentType,
@@ -179,15 +166,19 @@ export const parseStatementForImportJob = internalAction({
         return {
           parserId: choice.parserId,
           accountSuggestion: undefined,
+          parserWarnings: [],
           fatalError: redactErrorMessage(parsed.message),
           rows: [],
         };
       }
 
+      await updateProgress("normalizingRows", "Normalizing parsed rows.", 80);
       const normalized = normalizeParserRows(parsed.rows);
       const rows = normalized.map((r) => ({
         rowIndex: r.rowIndex,
         rawSummary: r.rawSummary,
+        sourceReference: r.sourceReference,
+        sourcePage: r.sourcePage,
         normalizedDescription: r.normalizedDescription,
         originalDescription: r.originalDescription,
         memo: r.memo,
@@ -214,6 +205,7 @@ export const parseStatementForImportJob = internalAction({
       return {
         parserId: choice.parserId,
         accountSuggestion: parsed.accountSuggestion,
+        parserWarnings: parsed.warnings.map((warning) => warning.message),
         rows,
       };
     } catch (err) {
@@ -224,6 +216,7 @@ export const parseStatementForImportJob = internalAction({
       return {
         parserId: "unknown",
         accountSuggestion: undefined,
+        parserWarnings: [],
         fatalError: redactErrorMessage(`Parser action crashed: ${message}`),
         rows: [],
       };

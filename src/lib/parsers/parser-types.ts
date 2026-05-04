@@ -73,6 +73,8 @@ export type ParserInput = {
 export type NormalizedImportCandidate = {
   rowIndex: number;
   rawSummary: string;
+  sourceReference?: string;
+  sourcePage?: number;
   normalizedDescription: string;
   originalDescription?: string;
   memo?: string;

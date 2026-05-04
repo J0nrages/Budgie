@@ -12,19 +12,17 @@
    - Otherwise, Convex creates a `statementFiles` row and `importJobs` row in `queued` status.
 4. A **Convex Workflow** (`importWorkflow.importStatementWorkflow`) runs:
    - `markJobProcessing` — sets job + file to `processing`.
-   - `parseStatementForImportJob` (action, retriable) — enforces the 10 MiB size guard, verifies the stored file hash, attempts local PDF text extraction with `unpdf`, falls back to Firecrawl OCR when local extraction throws **or** returns too little text, selects a parser, normalizes rows, and returns the full normalized row payload. Any unexpected error is caught and returned as `fatalError` so the workflow always reaches `persistParseResults` (no permanently stuck `processing` jobs).
+   - `parseStatementForImportJob` (action, retriable) — enforces the 10 MiB size guard, verifies the stored file hash, parses PDFs with Firecrawl `/parse` when `FIRECRAWL_API_KEY` is configured, selects a parser, normalizes rows, and returns the full normalized row payload. Any unexpected error is caught and returned as `fatalError` so the workflow always reaches `persistParseResults` (no permanently stuck `processing` jobs).
    - `persistParseResults` (mutation) — **idempotent** upsert of `importRows` by `(importJobId, rowIndex)`, duplicate detection, account suggestion persistence, and reconciliation sync. When `fatalError` is set the job + file are marked `failed` with a redacted error message.
+   - Progress is stored on `importJobs` (`progressStage`, `progressMessage`, `progressPercent`) so the Imports UI updates live over the existing Convex subscription.
 5. If the statement has no linked account, the job moves to `needsAccountLink` until the user confirms an existing account or creates a new one through `imports.linkImportJobToAccount`.
 6. User reviews rows in the UI and calls `imports.acceptImportRow` / `imports.rejectImportRow`.
 
-## PDF runtime caveat
+## PDF parsing
 
-The parser action runs in the Convex V8 isolate runtime by default. `unpdf`'s bundled `pdf.js` relies on `structuredClone(value, { transfer })`, which the V8 isolate **does not implement**, so local PDF text extraction throws on V8 deployments. The action degrades cleanly: it catches the error and either:
+PDF imports use Firecrawl's `/parse` endpoint because local PDF extraction is not reliable in the Convex V8 isolate runtime. `FIRECRAWL_API_KEY` must be configured in the Convex environment for PDF imports.
 
-1. Falls back to Firecrawl OCR if `FIRECRAWL_API_KEY` is set in the Convex environment, or
-2. Marks the job as `failed` with a hint listing the three ways to enable PDF imports — set `FIRECRAWL_API_KEY`, upload as CSV, or move the action to the Convex Node.js runtime by adding `"use node";` at the top of `convex/importActions.ts` (this requires Node v18/20/22/24 installed locally so the Convex CLI can deploy Node actions).
-
-CSV imports are unaffected by this caveat.
+CSV imports are unaffected and continue to parse locally.
 
 ## Retrying a job
 
@@ -52,7 +50,7 @@ See `src/lib/parsers/parser-types.ts`. Parsers return safe `ParserRow` objects (
 - Discover PDFs route to the dedicated Discover parser.
 - Known but unsupported issuers fail with a targeted message rather than the old generic PDF placeholder error.
 
-When OCR fallback is used, Firecrawl markdown is passed into the same parser contract as local text extraction.
+For PDFs, Firecrawl markdown is passed into the same parser contract as CSV text extraction.
 
 Generic CSV header matching recognizes common transaction date, post date, balance, merchant/payee, memo, FITID/id, reference, check, currency, and pending/posted columns. Debit/credit columns are normalized into positive review amounts plus transaction type.
 
@@ -91,6 +89,13 @@ Phase A merchant normalization is deterministic and local:
 - `acceptImportRow` resolves `merchantId` from the row's normalized merchant value or exact normalized alias key.
 
 There are no LLM calls in the import or accept path.
+
+### Merchant logos (Logo.dev)
+
+- Logos use **curated** merchant fields only: `merchants.canonicalName` and optional `merchants.logoDomain` (hostname for Logo.dev domain lookup, e.g. `wholefoodsmarket.com`).
+- Do not use raw import descriptions or noisy `importRows` payee text as the primary Logo.dev identifier; the name endpoint resolves the first brand-search hit and is less reliable than domain lookup.
+- Set `NEXT_PUBLIC_LOGO_DEV_PUBLISHABLE_KEY` in `.env.local` (see `.env.example`); Logo.dev documents this publishable token for browser `<img src="https://img.logo.dev/...">` URLs.
+- Phase A `normalizedKey` and `merchantAliases` are unchanged: they exist for dedupe and import matching, not for logo identity.
 
 ## Adding a bank CSV parser
 

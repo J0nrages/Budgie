@@ -24,13 +24,18 @@ Create `.env.local` with your Convex deployment URL (from the Convex CLI when yo
 NEXT_PUBLIC_CONVEX_URL=https://<your-deployment>.convex.cloud
 ```
 
-Optional for scanned PDFs only:
+Required for PDF imports:
 
 ```
 FIRECRAWL_API_KEY=fc-...
 ```
 
-Digital statement PDFs (for example Discover exports) are parsed locally first. `FIRECRAWL_API_KEY` is only used as an OCR fallback when local PDF extraction returns too little text.
+Statement PDFs (for example Discover exports) are parsed through Firecrawl's `/parse` endpoint. CSV imports do not require `FIRECRAWL_API_KEY`.
+Because parsing runs inside Convex, set the key on the Convex dev deployment:
+
+```bash
+bunx convex env set FIRECRAWL_API_KEY "$FIRECRAWL_API_KEY"
+```
 
 Then (with Node 24 active, e.g. `nvm use`):
 

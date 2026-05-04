@@ -1,6 +1,7 @@
 "use client";
 
 import type { Doc, Id } from "convex/_generated/dataModel";
+import Link from "next/link";
 import {
   Card,
   CardContent,
@@ -15,10 +16,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
 import type { useImports } from "@/hooks/use-imports";
-import { AccountLinkPrompt } from "./account-link-prompt";
 import { ImportJobStatus } from "./import-job-status";
-import { ImportReviewTable } from "./import-review-table";
 import { MerchantPhaseATools } from "./merchant-phase-a";
 import { StatementUpload } from "./statement-upload";
 
@@ -79,19 +79,22 @@ export function UploadPanel({
         </div>
         {selectedJob ? <ImportJobStatus job={selectedJob} /> : null}
         {selectedJob ? (
-          <AccountLinkPrompt
-            key={selectedJob._id}
-            job={selectedJob}
-            accounts={accounts}
-            importsApi={importsApi}
-          />
-        ) : null}
-        <ImportReviewTable
-          jobId={resolvedJobId}
-          job={selectedJob}
-          rows={importsApi.rows}
-          importsApi={importsApi}
-        />
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/60 p-4">
+            <div className="space-y-1">
+              <p className="font-medium">Open review workspace</p>
+              <p className="text-sm text-muted-foreground">
+                Review exceptions beside the original document and apply ready rows.
+              </p>
+            </div>
+            <Button asChild>
+              <Link href={`/imports/${selectedJob._id}`}>Open review</Link>
+            </Button>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            Select a recent job to open its review workspace.
+          </p>
+        )}
       </CardContent>
     </Card>
   );

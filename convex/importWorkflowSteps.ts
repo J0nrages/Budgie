@@ -3,9 +3,16 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { internalMutation, internalQuery } from "./_generated/server";
 import { buildTransactionDuplicateKey } from "./lib/ids";
+import {
+  applyReadyImportRows,
+  buildAccountMetadataWarnings,
+  findMatchingAccountForSuggestion,
+  recomputeJobRowStateForAccount,
+} from "./lib/importReview";
 import { syncStatementReconciliation } from "./lib/statementReconciliation";
 import {
   accountSuggestionValidator,
+  importJobProgressStageValidator,
   normalizedRowValidator,
 } from "./validators";
 
@@ -51,11 +58,35 @@ export const markJobProcessing = internalMutation({
     const now = Date.now();
     await ctx.db.patch(args.importJobId, {
       status: "processing",
+      progressStage: "starting",
+      progressMessage: "Workflow started.",
+      progressPercent: 10,
       updatedAt: now,
     });
     await ctx.db.patch(job.statementFileId, {
       status: "processing",
       updatedAt: now,
+    });
+    return null;
+  },
+});
+
+export const updateJobProgress = internalMutation({
+  args: {
+    importJobId: v.id("importJobs"),
+    stage: importJobProgressStageValidator,
+    message: v.string(),
+    percent: v.number(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args): Promise<null> => {
+    const job = await ctx.db.get(args.importJobId);
+    if (!job) return null;
+    await ctx.db.patch(args.importJobId, {
+      progressStage: args.stage,
+      progressMessage: args.message,
+      progressPercent: args.percent,
+      updatedAt: Date.now(),
     });
     return null;
   },
@@ -112,6 +143,7 @@ export const persistParseResults = internalMutation({
     importJobId: v.id("importJobs"),
     parserId: v.string(),
     accountSuggestion: v.optional(accountSuggestionValidator),
+    parserWarnings: v.array(v.string()),
     fatalError: v.optional(v.string()),
     rows: v.array(normalizedRowValidator),
   },
@@ -122,14 +154,24 @@ export const persistParseResults = internalMutation({
     const now = Date.now();
 
     await ctx.db.patch(args.importJobId, {
-      parserId: args.parserId,
-      accountSuggestion: args.accountSuggestion,
+        parserId: args.parserId,
+        accountSuggestion: args.accountSuggestion,
+        parserWarnings: args.parserWarnings,
+        progressStage: "persistingRows",
+        progressMessage:
+        args.rows.length === 1
+          ? "Saving 1 parsed row."
+          : `Saving ${args.rows.length} parsed rows.`,
+      progressPercent: 85,
       updatedAt: now,
     });
 
     if (args.fatalError) {
       await ctx.db.patch(args.importJobId, {
         status: "failed",
+        progressStage: "failed",
+        progressMessage: "Parsing failed.",
+        progressPercent: 100,
         redactedError: args.fatalError,
         updatedAt: now,
       });
@@ -208,6 +250,8 @@ export const persistParseResults = internalMutation({
         status,
         rowIndex: row.rowIndex,
         rawSummary: row.rawSummary,
+        sourceReference: row.sourceReference ?? `Row ${row.rowIndex + 1}`,
+        sourcePage: row.sourcePage,
         normalizedDescription: row.normalizedDescription,
         originalDescription: row.originalDescription,
         memo: row.memo,
@@ -251,8 +295,60 @@ export const persistParseResults = internalMutation({
       });
     }
 
+    let resolvedAccountId = job.accountId;
+    let accountMetadataWarnings = job.accountMetadataWarnings ?? [];
+
+    if (!resolvedAccountId && args.accountSuggestion) {
+      const matchedAccount = await findMatchingAccountForSuggestion(
+        ctx,
+        args.accountSuggestion,
+      );
+      if (matchedAccount) {
+        resolvedAccountId = matchedAccount._id;
+        accountMetadataWarnings = buildAccountMetadataWarnings(
+          matchedAccount,
+          args.accountSuggestion,
+        );
+        await ctx.db.patch(args.importJobId, {
+          accountId: matchedAccount._id,
+          accountMetadataWarnings,
+          updatedAt: now,
+        });
+        if (statementFile) {
+          await ctx.db.patch(statementFile._id, {
+            accountId: matchedAccount._id,
+            updatedAt: now,
+          });
+        }
+      }
+    }
+
+    if (resolvedAccountId) {
+      await recomputeJobRowStateForAccount(ctx, args.importJobId, resolvedAccountId);
+    }
+
     await syncStatementReconciliation(ctx, args.importJobId);
+
+    const autoAppliedCount = resolvedAccountId
+      ? await applyReadyImportRows(ctx, args.importJobId, {
+          onlyIfExceptionsPresent: true,
+        })
+      : 0;
+
     await recountImportJob(ctx, args.importJobId);
+
+    await ctx.db.patch(args.importJobId, {
+      progressStage: "ready",
+      progressMessage:
+        autoAppliedCount > 0
+          ? `Applied ${autoAppliedCount} clean row${autoAppliedCount === 1 ? "" : "s"}. Review flagged exceptions.`
+          : args.rows.length === 1
+            ? "Parsed 1 row for review."
+            : `Parsed ${args.rows.length} rows for review.`,
+      progressPercent: 100,
+      accountMetadataWarnings,
+      updatedAt: Date.now(),
+    });
     return null;
   },
 });

@@ -32,6 +32,36 @@ const issuerPatterns: Array<{
   },
 ];
 
+const STATEMENT_DATE_PATTERN =
+  "(?:\\d{1,2}/\\d{1,2}/\\d{2,4}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t)?(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\\.?\\s+\\d{1,2},?\\s+\\d{2,4})";
+
+const MONTHS: Record<string, number> = {
+  jan: 1,
+  january: 1,
+  feb: 2,
+  february: 2,
+  mar: 3,
+  march: 3,
+  apr: 4,
+  april: 4,
+  may: 5,
+  jun: 6,
+  june: 6,
+  jul: 7,
+  july: 7,
+  aug: 8,
+  august: 8,
+  sep: 9,
+  sept: 9,
+  september: 9,
+  oct: 10,
+  october: 10,
+  nov: 11,
+  november: 11,
+  dec: 12,
+  december: 12,
+};
+
 function compactWhitespace(value: string): string {
   return value.replace(/\r/g, "\n").replace(/[ \t]+/g, " ").trim();
 }
@@ -39,6 +69,21 @@ function compactWhitespace(value: string): string {
 function parseStatementDate(value: string): string | null {
   const direct = parseFlexibleDate(value);
   if (direct) return direct;
+
+  const monthName =
+    /^([A-Za-z]+)\.?\s+(\d{1,2}),?\s+(\d{2,4})$/.exec(value.trim());
+  if (monthName) {
+    const month = MONTHS[monthName[1].toLowerCase()];
+    const day = Number(monthName[2]);
+    const rawYear = Number(monthName[3]);
+    const year = rawYear < 100 ? (rawYear >= 70 ? 1900 + rawYear : 2000 + rawYear) : rawYear;
+    if (month) {
+      const iso = `${year.toString().padStart(4, "0")}-${month
+        .toString()
+        .padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
+      return isIsoDate(iso) ? iso : null;
+    }
+  }
 
   const shortYear = /^(\d{1,2})\/(\d{1,2})\/(\d{2})$/.exec(value.trim());
   if (!shortYear) return null;
@@ -95,9 +140,10 @@ function extractStatementPeriod(text: string): {
   start?: string;
   end?: string;
 } {
-  const match = /statement period[^\d]*(\d{1,2}\/\d{1,2}\/\d{2,4})\s*(?:-|–|to)\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i.exec(
-    text,
-  );
+  const match = new RegExp(
+    `statement period[^\\dA-Za-z]*(${STATEMENT_DATE_PATTERN})\\s*(?:-|–|to)\\s*(${STATEMENT_DATE_PATTERN})`,
+    "i",
+  ).exec(text);
   if (!match) return {};
 
   const start = parseStatementDate(match[1]);

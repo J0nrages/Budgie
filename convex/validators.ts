@@ -31,6 +31,13 @@ export const statementFileStatusValidator = v.union(
   v.literal("failed"),
 );
 
+export const statementRetentionPolicyValidator = v.union(v.literal("keep"));
+
+export const statementStorageStatusValidator = v.union(
+  v.literal("available"),
+  v.literal("deleted"),
+);
+
 export const importJobStatusValidator = v.union(
   v.literal("queued"),
   v.literal("processing"),
@@ -39,6 +46,19 @@ export const importJobStatusValidator = v.union(
   v.literal("accepted"),
   v.literal("failed"),
   v.literal("cancelled"),
+);
+
+export const importJobProgressStageValidator = v.union(
+  v.literal("queued"),
+  v.literal("starting"),
+  v.literal("loadingFile"),
+  v.literal("verifyingHash"),
+  v.literal("firecrawlParse"),
+  v.literal("choosingParser"),
+  v.literal("normalizingRows"),
+  v.literal("persistingRows"),
+  v.literal("ready"),
+  v.literal("failed"),
 );
 
 export const importRowStatusValidator = v.union(
@@ -96,6 +116,8 @@ export const accountSuggestionValidator = v.object({
 export const normalizedRowValidator = v.object({
   rowIndex: v.number(),
   rawSummary: v.string(),
+  sourceReference: v.optional(v.string()),
+  sourcePage: v.optional(v.number()),
   normalizedDescription: v.string(),
   originalDescription: v.optional(v.string()),
   memo: v.optional(v.string()),

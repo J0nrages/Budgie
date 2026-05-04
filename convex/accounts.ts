@@ -4,16 +4,15 @@ import type { MutationCtx } from "./_generated/server";
 import { mutation, query } from "./_generated/server";
 import { assertSingleUserLocalMode } from "./lib/auth";
 import {
+  assertUniqueAccountName,
+  createAccountRecord,
+  normalizeOptionalString,
+} from "./lib/accountRecords";
+import {
   accountSubtypeValidator,
   accountTypeValidator,
   interestMethodValidator,
 } from "./validators";
-
-function normalizeOptionalString(value: string | undefined): string | undefined {
-  if (value === undefined) return undefined;
-  const t = value.trim();
-  return t.length === 0 ? undefined : t;
-}
 
 export const list = query({
   args: {},
@@ -58,51 +57,19 @@ export const create = mutation({
   returns: v.id("accounts"),
   handler: async (ctx, args): Promise<Id<"accounts">> => {
     assertSingleUserLocalMode();
-    const now = Date.now();
-    const name = args.name.trim();
-    if (name.length === 0) throw new Error("Account name is required");
-
-    const institution = normalizeOptionalString(args.institution);
-    const lastFour = normalizeOptionalString(args.lastFour);
-
-    const dup = await ctx.db
-      .query("accounts")
-      .withIndex("by_type_name", (q) =>
-        q.eq("type", args.type).eq("name", name),
-      )
-      .unique()
-      .catch(() => null);
-    if (dup) throw new Error("An account with this type and name already exists");
-
-    const accountId = await ctx.db.insert("accounts", {
-      name,
+    return await createAccountRecord(ctx, {
+      name: args.name,
       type: args.type,
       subtype: args.subtype,
-      institution,
-      lastFour,
+      institution: args.institution,
+      lastFour: args.lastFour,
       initialBalanceCents: args.initialBalanceCents,
       creditLimitCents: args.creditLimitCents,
       aprBps: args.aprBps,
       statementDay: args.statementDay,
       paymentDueDay: args.paymentDueDay,
-      createdAt: now,
-      updatedAt: now,
+      lenderProfile: args.lenderProfile,
     });
-
-    if (args.lenderProfile) {
-      await ctx.db.insert("lenderProfiles", {
-        accountId,
-        aprBps: args.lenderProfile.aprBps,
-        gracePeriodDays: args.lenderProfile.gracePeriodDays,
-        statementDay: args.lenderProfile.statementDay,
-        paymentDueDay: args.lenderProfile.paymentDueDay,
-        interestMethod: args.lenderProfile.interestMethod,
-        createdAt: now,
-        updatedAt: now,
-      });
-    }
-
-    return accountId;
   },
 });
 
@@ -128,16 +95,7 @@ export const update = mutation({
     if (args.name !== undefined) {
       const name = args.name.trim();
       if (name.length === 0) throw new Error("Account name is required");
-      const clash = await ctx.db
-        .query("accounts")
-        .withIndex("by_type_name", (q) =>
-          q.eq("type", existing.type).eq("name", name),
-        )
-        .unique()
-        .catch(() => null);
-      if (clash && clash._id !== args.accountId) {
-        throw new Error("Another account already uses this name for this type");
-      }
+      await assertUniqueAccountName(ctx, existing.type, name, args.accountId);
       patch.name = name;
     }
     if (args.institution !== undefined) {

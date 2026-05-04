@@ -23,11 +23,15 @@ import { useTransactions } from "@/hooks/use-transactions";
 import type { AccountLike, TransactionLike } from "@/lib/ledger";
 import type { Basis, TransactionType } from "@/types/finance";
 
-export function FinanceApp() {
+export function FinanceApp({
+  initialLedgerTab = "transactions",
+}: {
+  initialLedgerTab?: "transactions" | "accounts" | "imports";
+}) {
   const [basis, setBasis] = useState<Basis>("cash");
   const [ledgerTab, setLedgerTab] = useState<
     "transactions" | "accounts" | "imports"
-  >("transactions");
+  >(initialLedgerTab);
   const [ledgerAccountId, setLedgerAccountId] = useState<
     Id<"accounts"> | undefined
   >();

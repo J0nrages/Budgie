@@ -11,6 +11,36 @@ type ParsedRow = {
   category?: string;
 };
 
+const MONTHS: Record<string, number> = {
+  jan: 1,
+  january: 1,
+  feb: 2,
+  february: 2,
+  mar: 3,
+  march: 3,
+  apr: 4,
+  april: 4,
+  may: 5,
+  jun: 6,
+  june: 6,
+  jul: 7,
+  july: 7,
+  aug: 8,
+  august: 8,
+  sep: 9,
+  sept: 9,
+  september: 9,
+  oct: 10,
+  october: 10,
+  nov: 11,
+  november: 11,
+  dec: 12,
+  december: 12,
+};
+
+const DATE_TOKEN_PATTERN =
+  "(?:\\d{1,2}/\\d{1,2}(?:/\\d{2,4})?|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t)?(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\\.?\\s+\\d{1,2}(?:,?\\s+\\d{2,4})?)";
+
 function cleanLine(line: string): string {
   return line
     .replace(/\u00a0/g, " ")
@@ -19,11 +49,16 @@ function cleanLine(line: string): string {
 }
 
 function parseAmountCents(raw: string): number | null {
-  const normalized = raw.replace(/[$,\s]/g, "");
+  const normalized = raw
+    .replace(/\\/g, "")
+    .replace(/\b(?:CR|CREDIT)\b/gi, "")
+    .replace(/\b(?:DR|DEBIT)\b/gi, "")
+    .replace(/[$,\s]/g, "");
   if (!normalized) return null;
 
   const negative =
     normalized.startsWith("-") ||
+    normalized.endsWith("-") ||
     (normalized.startsWith("(") && normalized.endsWith(")"));
   const numeric = negative
     ? normalized.replace(/[()-]/g, "")
@@ -94,6 +129,16 @@ function parseMdSlashDate(value: string): { month: number; day: number } | null 
   return { month, day };
 }
 
+function parseMonthNameDate(value: string): { month: number; day: number } | null {
+  const match =
+    /^([A-Za-z]+)\.?\s+(\d{1,2})(?:,?\s+\d{2,4})?$/.exec(value.trim());
+  if (!match) return null;
+  const month = MONTHS[match[1].toLowerCase()];
+  const day = Number(match[2]);
+  if (!month || day < 1 || day > 31) return null;
+  return { month, day };
+}
+
 function inferYearForMonthDay(
   month: number,
   day: number,
@@ -120,7 +165,7 @@ function toIsoDate(
   statementPeriodStart: string | undefined,
   statementPeriodEnd: string | undefined,
 ): string | null {
-  const parsed = parseMdSlashDate(raw);
+  const parsed = parseMdSlashDate(raw) ?? parseMonthNameDate(raw);
   if (!parsed) return null;
   const year = inferYearForMonthDay(
     parsed.month,
@@ -175,13 +220,16 @@ function parseStatementLine(
   statementPeriodStart: string | undefined,
   statementPeriodEnd: string | undefined,
 ): ParsedRow | null {
+  const twoDatePattern = new RegExp(
+    `^(${DATE_TOKEN_PATTERN})\\s+(${DATE_TOKEN_PATTERN})\\s+(.+?)\\s+([-$(]?\\$?[\\d,]+\\.\\d{2}\\)?(?:\\s*(?:CR|CREDIT|DR|DEBIT|-))?)`,
+    "i",
+  );
+  const oneDatePattern = new RegExp(
+    `^(${DATE_TOKEN_PATTERN})\\s+(.+?)\\s+([-$(]?\\$?[\\d,]+\\.\\d{2}\\)?(?:\\s*(?:CR|CREDIT|DR|DEBIT|-))?)`,
+    "i",
+  );
   const match =
-    /^(\d{1,2}\/\d{1,2})(?:\/\d{2,4})?\s+(\d{1,2}\/\d{1,2})(?:\/\d{2,4})?\s+(.+?)\s+([-$(]?\$?[\d,]+\.\d{2}\)?)/.exec(
-      line,
-    ) ??
-    /^(\d{1,2}\/\d{1,2})(?:\/\d{2,4})?\s+(.+?)\s+([-$(]?\$?[\d,]+\.\d{2}\)?)/.exec(
-      line,
-    );
+    twoDatePattern.exec(line) ?? oneDatePattern.exec(line);
   if (!match) return null;
 
   const postDateRaw = match.length >= 5 ? match[2] : match[1];
@@ -213,6 +261,7 @@ function parseStatementLine(
 
 function shouldTreatAsContinuation(line: string): boolean {
   if (!line) return false;
+  if (line.includes("|")) return false;
   if (/^(page \d+|continued|total|new balance|credit line|account number)/i.test(line)) {
     return false;
   }
@@ -248,6 +297,7 @@ export function parseDiscoverStatement(input: ParserInput): ParserResult {
 
     const parsed =
       parseTableRow(line, section, statementPeriodStart, statementPeriodEnd) ??
+      parseMarkdownTableRow(line, section, statementPeriodStart, statementPeriodEnd) ??
       parseStatementLine(line, section, statementPeriodStart, statementPeriodEnd);
 
     if (parsed) {
@@ -285,5 +335,55 @@ export function parseDiscoverStatement(input: ParserInput): ParserResult {
     rows,
     warnings: [],
     accountSuggestion: detection.accountSuggestion,
+  };
+}
+
+function parseMarkdownTableRow(
+  line: string,
+  section: DiscoverSection,
+  statementPeriodStart: string | undefined,
+  statementPeriodEnd: string | undefined,
+): ParsedRow | null {
+  if (!line.includes("|")) return null;
+  const cells = line
+    .split("|")
+    .map((cell) => cleanLine(cell))
+    .filter((cell) => cell.length > 0);
+  if (cells.length < 3) return null;
+  if (
+    cells.every((cell) => /^:?-{2,}:?$/.test(cell)) ||
+    cells.some((cell) => /^(date|trans|post|description|amount)$/i.test(cell))
+  ) {
+    return null;
+  }
+
+  const amountCents = parseAmountCents(cells[cells.length - 1]);
+  if (amountCents === null) return null;
+
+  const dateCells = cells
+    .slice(0, -1)
+    .map((cell, index) => ({ cell, index, date: toIsoDate(cell, statementPeriodStart, statementPeriodEnd) }))
+    .filter((entry): entry is { cell: string; index: number; date: string } =>
+      Boolean(entry.date),
+    );
+  if (dateCells.length === 0) return null;
+
+  const postDate = dateCells[dateCells.length - 1].date;
+  const transDateIso = dateCells.length > 1 ? dateCells[0].date : undefined;
+  const dateIndexes = new Set(dateCells.map((entry) => entry.index));
+  const description = cells
+    .slice(0, -1)
+    .filter((_, index) => !dateIndexes.has(index))
+    .join(" ")
+    .trim();
+  if (!description) return null;
+
+  return {
+    transactionDate:
+      transDateIso && transDateIso !== postDate ? transDateIso : undefined,
+    postedDate: postDate,
+    description,
+    amountCents: signAmount(amountCents, section, description),
+    category: sectionToCategory(section),
   };
 }

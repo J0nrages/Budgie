@@ -29,6 +29,7 @@ export function useImports(selectedJobId: Id<"importJobs"> | undefined) {
   const merchants = useQuery(api.merchants.listMerchants, {});
   const createMerchant = useMutation(api.merchants.createMerchant);
   const upsertMerchantAlias = useMutation(api.merchants.upsertMerchantAlias);
+  const setMerchantLogoDomain = useMutation(api.merchants.setMerchantLogoDomain);
 
   return {
     jobs,
@@ -45,5 +46,6 @@ export function useImports(selectedJobId: Id<"importJobs"> | undefined) {
     merchants,
     createMerchant,
     upsertMerchantAlias,
+    setMerchantLogoDomain,
   };
 }
