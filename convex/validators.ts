@@ -180,3 +180,36 @@ export const scenarioTypeValidator = v.union(
   v.literal("budgetTweak"),
   v.literal("lifeChange"),
 );
+
+/** Surface that originated an AI-driven action (in-app chat vs. external MCP client). */
+export const aiActionSurfaceValidator = v.union(
+  v.literal("inAppChat"),
+  v.literal("mcp"),
+);
+
+/** Human (or auto) decision on a proposed AI action. */
+export const aiActionDecisionValidator = v.union(
+  v.literal("approved"),
+  v.literal("rejected"),
+  v.literal("auto"),
+);
+
+/** Execution status after a decision has been recorded. */
+export const aiActionStatusValidator = v.union(
+  v.literal("pendingDecision"),
+  v.literal("success"),
+  v.literal("error"),
+  v.literal("rejected"),
+  v.literal("undone"),
+);
+
+/**
+ * Strategy used by `undoAiAction` to revert a previously-applied write.
+ * Stored per-row so each tool can decide how its undo data should be interpreted.
+ */
+export const aiActionUndoStrategyValidator = v.union(
+  v.literal("restoreTransactionSnapshots"),
+  v.literal("deleteBudgetCascade"),
+  v.literal("revertBudgetLineItemLimit"),
+  v.literal("reverseMerchantMerge"),
+);

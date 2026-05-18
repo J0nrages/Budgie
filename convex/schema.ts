@@ -4,6 +4,10 @@ import {
   accountSuggestionValidator,
   accountSubtypeValidator,
   accountTypeValidator,
+  aiActionDecisionValidator,
+  aiActionStatusValidator,
+  aiActionSurfaceValidator,
+  aiActionUndoStrategyValidator,
   importJobProgressStageValidator,
   budgetCadenceValidator,
   budgetTargetTypeValidator,
@@ -303,4 +307,35 @@ export default defineSchema({
     createdAt: v.number(),
     updatedAt: v.number(),
   }).index("by_baseBudget", ["baseBudgetId"]),
+
+  /**
+   * Audit trail for every AI-initiated tool call, whether read or write.
+   * Read tools log a single `auto` + `success` row for observability.
+   * Write tools log a `pendingDecision` row when proposed, then update with
+   * the human decision and outcome. `undoDataJson` captures the prior state
+   * needed for `undoAiAction` to reverse the change.
+   */
+  aiActions: defineTable({
+    surface: aiActionSurfaceValidator,
+    sessionId: v.optional(v.string()),
+    toolName: v.string(),
+    argsJson: v.string(),
+    proposalSummary: v.string(),
+    decision: aiActionDecisionValidator,
+    decisionAt: v.number(),
+    status: aiActionStatusValidator,
+    resultJson: v.optional(v.string()),
+    errorMessage: v.optional(v.string()),
+    undoStrategy: v.optional(aiActionUndoStrategyValidator),
+    undoDataJson: v.optional(v.string()),
+    undoneAt: v.optional(v.number()),
+    requiresApproval: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_decisionAt", ["decisionAt"])
+    .index("by_surface_decisionAt", ["surface", "decisionAt"])
+    .index("by_session", ["sessionId"])
+    .index("by_status_decisionAt", ["status", "decisionAt"])
+    .index("by_toolName_decisionAt", ["toolName", "decisionAt"]),
 });

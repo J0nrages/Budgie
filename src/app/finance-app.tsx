@@ -6,6 +6,7 @@ import { Bird, Loader2, Upload } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { AccountForm } from "@/components/accounts/account-form";
 import { AccountList } from "@/components/accounts/account-list";
+import { BudgieChatSheet } from "@/components/budgie/budgie-chat-sheet";
 import { SettingsDialog } from "@/components/dashboard/settings-dialog";
 import { UploadPanel } from "@/components/imports/upload-panel";
 import { AppFooter } from "@/components/layout/app-footer";
@@ -183,6 +184,7 @@ export function FinanceApp({
             Budgie
           </h1>
           <div className="flex flex-wrap items-center gap-2">
+            <BudgieChatSheet />
             <SettingsDialog basis={basis} onBasisChange={setBasis} />
           </div>
         </header>

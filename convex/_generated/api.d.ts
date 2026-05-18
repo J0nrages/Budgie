@@ -9,6 +9,7 @@
  */
 
 import type * as accounts from "../accounts.js";
+import type * as aiActions from "../aiActions.js";
 import type * as budgetReports from "../budgetReports.js";
 import type * as budgetScenarios from "../budgetScenarios.js";
 import type * as budgets from "../budgets.js";
@@ -18,6 +19,7 @@ import type * as importWorkflow from "../importWorkflow.js";
 import type * as importWorkflowSteps from "../importWorkflowSteps.js";
 import type * as imports from "../imports.js";
 import type * as lib_accountRecords from "../lib/accountRecords.js";
+import type * as lib_aiActions from "../lib/aiActions.js";
 import type * as lib_auth from "../lib/auth.js";
 import type * as lib_budgetMath from "../lib/budgetMath.js";
 import type * as lib_categories from "../lib/categories.js";
@@ -45,6 +47,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   accounts: typeof accounts;
+  aiActions: typeof aiActions;
   budgetReports: typeof budgetReports;
   budgetScenarios: typeof budgetScenarios;
   budgets: typeof budgets;
@@ -54,6 +57,7 @@ declare const fullApi: ApiFromModules<{
   importWorkflowSteps: typeof importWorkflowSteps;
   imports: typeof imports;
   "lib/accountRecords": typeof lib_accountRecords;
+  "lib/aiActions": typeof lib_aiActions;
   "lib/auth": typeof lib_auth;
   "lib/budgetMath": typeof lib_budgetMath;
   "lib/categories": typeof lib_categories;

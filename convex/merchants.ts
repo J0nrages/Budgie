@@ -81,6 +81,153 @@ export const setMerchantLogoDomain = mutation({
   },
 });
 
+/**
+ * Atomically merge several merchants into one canonical merchant.
+ *
+ * For every transaction referencing a merged merchant id, switch its
+ * `merchantId` to the keep merchant and rewrite its `merchantName` to
+ * the keep merchant's canonical name. Aliases on merged merchants get
+ * reassigned to the keep merchant (pattern collisions skipped). The
+ * merged merchant documents are then deleted.
+ *
+ * Returns a snapshot the caller can persist as `undoData` for
+ * `aiActions.undo` to fully reverse the merge later.
+ */
+export const merge = mutation({
+  args: {
+    keepMerchantId: v.id("merchants"),
+    mergeMerchantIds: v.array(v.id("merchants")),
+  },
+  returns: v.object({
+    keepMerchantId: v.id("merchants"),
+    keepCanonicalName: v.string(),
+    affectedTransactionCount: v.number(),
+    reassignedAliasCount: v.number(),
+    deletedMerchantIds: v.array(v.id("merchants")),
+    undoSnapshot: v.any(),
+  }),
+  handler: async (ctx, args) => {
+    assertSingleUserLocalMode();
+    const keep = await ctx.db.get(args.keepMerchantId);
+    if (!keep) throw new Error("Keep merchant not found");
+
+    const uniqueMergeIds = [...new Set(args.mergeMerchantIds)].filter(
+      (id) => id !== args.keepMerchantId,
+    );
+    if (uniqueMergeIds.length === 0) {
+      return {
+        keepMerchantId: args.keepMerchantId,
+        keepCanonicalName: keep.canonicalName,
+        affectedTransactionCount: 0,
+        reassignedAliasCount: 0,
+        deletedMerchantIds: [],
+        undoSnapshot: { transactions: [], restoredMerchants: [] },
+      };
+    }
+
+    const transactionsSnapshot: Array<{
+      id: Id<"transactions">;
+      merchantId?: Id<"merchants">;
+      merchantName?: string;
+    }> = [];
+    const restoredMerchants: Array<{
+      doc: {
+        canonicalName: string;
+        normalizedKey: string;
+        logoDomain?: string;
+        createdAt: number;
+        updatedAt: number;
+      };
+      aliases: Array<{
+        aliasPattern: string;
+        createdAt: number;
+        updatedAt: number;
+      }>;
+    }> = [];
+
+    let affectedTransactionCount = 0;
+    let reassignedAliasCount = 0;
+    const now = Date.now();
+
+    for (const mergeId of uniqueMergeIds) {
+      const mergeDoc = await ctx.db.get(mergeId);
+      if (!mergeDoc) continue;
+
+      const aliases = await ctx.db
+        .query("merchantAliases")
+        .withIndex("by_merchant", (q) => q.eq("merchantId", mergeId))
+        .collect();
+
+      restoredMerchants.push({
+        doc: {
+          canonicalName: mergeDoc.canonicalName,
+          normalizedKey: mergeDoc.normalizedKey,
+          logoDomain: mergeDoc.logoDomain,
+          createdAt: mergeDoc.createdAt,
+          updatedAt: mergeDoc.updatedAt,
+        },
+        aliases: aliases.map((a) => ({
+          aliasPattern: a.aliasPattern,
+          createdAt: a.createdAt,
+          updatedAt: a.updatedAt,
+        })),
+      });
+
+      for (const alias of aliases) {
+        const clash = await ctx.db
+          .query("merchantAliases")
+          .withIndex("by_alias_pattern", (q) =>
+            q.eq("aliasPattern", alias.aliasPattern),
+          )
+          .first();
+        if (clash && clash.merchantId === args.keepMerchantId) {
+          await ctx.db.delete(alias._id);
+        } else if (clash && clash._id !== alias._id) {
+          await ctx.db.delete(alias._id);
+        } else {
+          await ctx.db.patch(alias._id, {
+            merchantId: args.keepMerchantId,
+            updatedAt: now,
+          });
+          reassignedAliasCount += 1;
+        }
+      }
+
+      const txs = await ctx.db
+        .query("transactions")
+        .filter((q) => q.eq(q.field("merchantId"), mergeId))
+        .collect();
+      for (const t of txs) {
+        transactionsSnapshot.push({
+          id: t._id,
+          merchantId: t.merchantId,
+          merchantName: t.merchantName,
+        });
+        await ctx.db.patch(t._id, {
+          merchantId: args.keepMerchantId,
+          merchantName: keep.canonicalName,
+          updatedAt: now,
+        });
+        affectedTransactionCount += 1;
+      }
+
+      await ctx.db.delete(mergeId);
+    }
+
+    return {
+      keepMerchantId: args.keepMerchantId,
+      keepCanonicalName: keep.canonicalName,
+      affectedTransactionCount,
+      reassignedAliasCount,
+      deletedMerchantIds: uniqueMergeIds,
+      undoSnapshot: {
+        transactions: transactionsSnapshot,
+        restoredMerchants,
+      },
+    };
+  },
+});
+
 export const upsertMerchantAlias = mutation({
   args: {
     merchantId: v.id("merchants"),
